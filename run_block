@@ -1588,6 +1588,17 @@ def find_start_file(work_dir: Path) -> tuple[Path | None, Path]:
     wdir_candidate = wdir / START_FILE_NAME
     if wdir_candidate.is_file():
         return wdir_candidate, wdir
+    for base in (cwd, wdir):
+        try:
+            sub_matches = sorted(
+                p / START_FILE_NAME
+                for p in base.iterdir()
+                if p.is_dir() and not p.name.startswith(".") and (p / START_FILE_NAME).is_file()
+            )
+            if len(sub_matches) == 1:
+                return sub_matches[0], sub_matches[0].parent
+        except OSError:
+            pass
     return None, wdir
 
 
