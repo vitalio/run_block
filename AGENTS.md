@@ -11,7 +11,7 @@ this file, [TODO.md](TODO.md), `run_block --agents`, and current Git state.
 
 - `run_block` — standalone executable Python 3 CLI (zero external dependencies; supports Python 3.9+ on Linux, macOS, and Windows).
 - `.run_block.start` — declarative specification of files and `$ <cmd>` commands bundled by `run_block --start` into `<session>/0.txt`.
-- `VERSION` — single-line semantic version string (`0.6.0`), must match `VERSION` inside `run_block`.
+- `VERSION` — single-line semantic version string (`0.6.1`), must match `VERSION` inside `run_block`.
 - `install.sh` — POSIX shell installer for Linux and macOS (checks `PATH` conflicts, installs to `~/.local/bin`, runs `--agents`).
 - `install.ps1` — PowerShell 7+ installer for Windows.
 - `tests/test_run_block.py` — unit test suite (`unittest`, no network required).
@@ -31,4 +31,5 @@ this file, [TODO.md](TODO.md), `run_block --agents`, and current Git state.
   ```bash
   sh install.sh --yes >/dev/null
   ```
-- **Git identity and releases:** Commits in this repository use `Vitaly <2vitalio@gmail.com>` and push to `origin main` (`git@github.com-2vitalio:vitalio/run_block.git`). Tag releases as `vX.Y.Z` so GitHub Actions publishes the release.
+- **Versioning and release tags on every CLI/installer change:** Whenever `run_block`, `install.sh`, or `install.ps1` is modified, bump the version in both `VERSION` and `VERSION = "..."` inside `run_block` (and `AGENTS.md`), reinstall locally (`sh install.sh --yes >/dev/null`), commit, push `origin main`, and push an annotated release tag (`git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z`) so `--update` / `--check-update` and GitHub Releases always stay up to date.
+- **Git identity:** Commits in this repository use `Vitaly <2vitalio@gmail.com>` and push to `origin main` (`git@github.com-2vitalio:vitalio/run_block.git`).
