@@ -131,10 +131,35 @@ echo "Installed: $VER -> $TARGET"
 case ":${PATH:-}:" in
     *":$INSTALL_DIR:"*) ;;
     *)
-        echo ""
-        echo "Note: $INSTALL_DIR is not in your PATH."
-        echo "Add this line to your ~/.bashrc or ~/.zshrc:"
-        echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
+        RC_FILE=""
+        case "${SHELL:-}" in
+            */zsh) RC_FILE="$HOME/.zshrc" ;;
+            */bash)
+                if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
+                    RC_FILE="$HOME/.bash_profile"
+                else
+                    RC_FILE="$HOME/.bashrc"
+                fi
+                ;;
+            *)
+                if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
+                    RC_FILE="$HOME/.zshrc"
+                else
+                    RC_FILE="$HOME/.bashrc"
+                fi
+                ;;
+        esac
+        EXPORT_LINE="export PATH=\"$INSTALL_DIR:\$PATH\""
+        if [ -n "$RC_FILE" ] && [ "${INSTALL_DIR#"$HOME"}" != "$INSTALL_DIR" ]; then
+            if [ ! -f "$RC_FILE" ] || ! grep -Fq "$INSTALL_DIR" "$RC_FILE" 2>/dev/null; then
+                printf '\n# Added by %s installer\n%s\n' "$CMD_NAME" "$EXPORT_LINE" >> "$RC_FILE"
+                echo "Added $INSTALL_DIR to PATH in $RC_FILE (run 'source $RC_FILE' or open a new terminal)."
+            else
+                echo "Note: $INSTALL_DIR is in $RC_FILE; run 'source $RC_FILE' or open a new terminal."
+            fi
+        else
+            echo "Note: $INSTALL_DIR is not in your PATH. Add: $EXPORT_LINE"
+        fi
         ;;
 esac
 echo "Tip: run '$CMD_NAME --init-start' and '$CMD_NAME --start' in any repo to build a session context bundle."
