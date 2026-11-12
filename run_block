@@ -1,0 +1,1600 @@
+#!/usr/bin/env python3
+# run_block-repo: vitalio/run_block
+"""Usage:
+  {prog} <session>/<step>            Run a Bash block from stdin
+  {prog} --fix <session>/<target>    Patch <target>.sh via Python on stdin and run as <target>_N
+  {prog} --retry [session/step]      Re-run the last block (or a specific block, e.g. after aborting)
+  {prog} --list | -l [session]       List sessions or steps in a session with their status
+  {prog} --show [session/step]       Show saved script and output of the last (or specified) block
+  {prog} --start [--force] [session] Create a new session directory in {base_dir}/ (default: s1, s2, ...)
+  {prog} --agents-install [FILE]      Install or update {prog} instructions in FILE (default: {agents_file})
+  {prog} --agents                    Print Markdown instructions for AI agents (for AGENTS.md / CLAUDE.md)
+  {prog} --config                    Show active configuration and config file path
+  {prog} --init-config [--force]     Create a commented default config file at {config_path}
+  {prog} --update [--force]          Self-update {prog} from GitHub (vitalio/run_block)
+  {prog} --check-update              Check if a newer version is available on GitHub
+  {prog} -V | --version              Print version and exit 0
+  {prog} -h | --help                 Print this usage and exit 0
+
+Reads a Bash script (or Python patch in --fix mode) from stdin, saves it under
+{base_dir}/<session>/, checks syntax with bash -n, displays a detailed BLOCK PLAN
+(highlighting any safety warnings) and asks for confirmation before running,
+executes it from the current Git repository root (or current directory), and
+streams stdout+stderr to both the terminal and {base_dir}/<session>/<step>.txt.
+
+Refuses to overwrite an already-used step or skip a sequential step number.
+At the end of execution, press Enter to copy the output to your clipboard or Esc to skip.
+
+Configuration file ({config_path}):
+  base_dir = /tmp/{prog}             Session and log directory
+  work_dir = auto                    Working directory: auto (Git root or $PWD), cwd, or path
+  agents_file = AGENTS.md            Default target file for --agents-install
+  clipboard = prompt                 After execution: prompt | auto | never
+  token_stats = true                 Show size & Claude/GPT/Gemini token counts: true | false
+  shell = bash                       Shell executable used for syntax check and execution
+
+Environment variables (override config file):
+  RUN_BLOCK_CONFIG         Path to config file (default: {config_path})
+  RUN_BLOCK_DIR            Override base_dir (default: {base_dir})
+  RUN_BLOCK_CWD            Override work_dir for executed blocks
+  RUN_BLOCK_AGENTS_FILE    Override default file for --agents-install (default: AGENTS.md)
+  RUN_BLOCK_CLIPBOARD      Override clipboard mode: prompt | auto | never
+  RUN_BLOCK_NO_CLIPBOARD=1 Alias for RUN_BLOCK_CLIPBOARD=never
+  RUN_BLOCK_TOKEN_STATS    Override token_stats: 1/true or 0/false
+  RUN_BLOCK_SHELL          Override shell executable (default: bash)
+  RUN_BLOCK_UPDATE_URL     Override raw script URL for --update / --check-update
+"""
+from __future__ import annotations
+
+if __doc__ is None:
+    raise SystemExit("missing usage documentation")
+
+import ast
+import difflib
+import math
+import os
+import re
+import select
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
+import time
+import unicodedata
+import urllib.request
+from pathlib import Path
+
+try:
+    import pty
+    import termios
+    import tty
+    HAS_PTY = True
+except ImportError:
+    pty = None  # type: ignore[assignment]
+    termios = None  # type: ignore[assignment]
+    tty = None  # type: ignore[assignment]
+    HAS_PTY = False
+
+VERSION = "0.5.0"
+REPO_MARKER = "run_block-repo: vitalio/run_block"
+DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
+AGENTS_START_MARKER_PREFIX = "<!-- run_block:start"
+AGENTS_END_MARKER = "<!-- run_block:end -->"
+
+
+def prog_name() -> str:
+    raw = Path(sys.argv[0]).name if sys.argv and sys.argv[0] else "run_block"
+    for suf in (".py", ".cmd", ".bat", ".exe"):
+        if raw.lower().endswith(suf) and len(raw) > len(suf):
+            raw = raw[:-len(suf)]
+            break
+    return raw or "run_block"
+
+
+def config_file_path() -> Path:
+    env_cfg = os.environ.get("RUN_BLOCK_CONFIG")
+    if env_cfg:
+        return Path(env_cfg).expanduser()
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    xdg_path = (Path(xdg).expanduser() if xdg else (Path.home() / ".config")) / "run_block" / "config"
+    if os.name == "nt" and not xdg_path.exists():
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            win_path = Path(appdata) / "run_block" / "config"
+            if win_path.exists():
+                return win_path
+    return xdg_path
+
+
+def parse_config_file(path: Path | None = None) -> dict[str, str]:
+    target = path if path is not None else config_file_path()
+    if not target.is_file():
+        return {}
+    out: dict[str, str] = {}
+    try:
+        for raw_line in target.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or line.startswith(";"):
+                continue
+            if "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            key = k.strip().lower()
+            val = v.strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+                val = val[1:-1]
+            else:
+                val = re.sub(r"\s+#.*$", "", val).strip()
+            if key:
+                out[key] = val
+    except Exception:
+        return {}
+    return out
+
+
+def _os_default_base_dir(prog: str | None = None) -> Path:
+    name = prog or prog_name()
+    if os.name == "nt":
+        return Path(tempfile.gettempdir()) / name
+    return Path("/tmp") / name
+
+
+def get_setting(key: str, prog: str | None = None) -> tuple[str, str]:
+    """Returns (value, source) where source is 'env', 'config', or 'default'."""
+    cfg = parse_config_file()
+    if key == "base_dir":
+        if os.environ.get("RUN_BLOCK_DIR"):
+            return os.environ["RUN_BLOCK_DIR"], "env"
+        if "base_dir" in cfg and cfg["base_dir"]:
+            return str(Path(cfg["base_dir"]).expanduser()), "config"
+        return str(_os_default_base_dir(prog)), "default"
+    if key == "work_dir":
+        if os.environ.get("RUN_BLOCK_CWD"):
+            return os.environ["RUN_BLOCK_CWD"], "env"
+        if "work_dir" in cfg and cfg["work_dir"]:
+            return cfg["work_dir"], "config"
+        return "auto", "default"
+    if key == "agents_file":
+        if os.environ.get("RUN_BLOCK_AGENTS_FILE"):
+            return os.environ["RUN_BLOCK_AGENTS_FILE"].strip(), "env"
+        if "agents_file" in cfg and cfg["agents_file"]:
+            return cfg["agents_file"].strip(), "config"
+        return "AGENTS.md", "default"
+    if key == "clipboard":
+        if os.environ.get("RUN_BLOCK_NO_CLIPBOARD") == "1":
+            return "never", "env"
+        if os.environ.get("RUN_BLOCK_CLIPBOARD"):
+            return os.environ["RUN_BLOCK_CLIPBOARD"].strip().lower(), "env"
+        if "clipboard" in cfg and cfg["clipboard"]:
+            return cfg["clipboard"].strip().lower(), "config"
+        return "prompt", "default"
+    if key == "token_stats":
+        if os.environ.get("RUN_BLOCK_TOKEN_STATS"):
+            v = os.environ["RUN_BLOCK_TOKEN_STATS"].strip().lower()
+            return ("false" if v in ("0", "false", "no", "off") else "true"), "env"
+        if "token_stats" in cfg and cfg["token_stats"]:
+            v = cfg["token_stats"].strip().lower()
+            return ("false" if v in ("0", "false", "no", "off") else "true"), "config"
+        return "true", "default"
+    if key == "shell":
+        if os.environ.get("RUN_BLOCK_SHELL"):
+            return os.environ["RUN_BLOCK_SHELL"].strip(), "env"
+        if "shell" in cfg and cfg["shell"]:
+            return cfg["shell"].strip(), "config"
+        return "bash", "default"
+    if key == "update_url":
+        if os.environ.get("RUN_BLOCK_UPDATE_URL"):
+            return os.environ["RUN_BLOCK_UPDATE_URL"].strip(), "env"
+        if "update_url" in cfg and cfg["update_url"]:
+            return cfg["update_url"].strip(), "config"
+        return DEFAULT_UPDATE_URL, "default"
+    raise KeyError(f"unknown setting: {key}")
+
+
+def default_base_dir(prog: str | None = None) -> Path:
+    val, _ = get_setting("base_dir", prog=prog)
+    return Path(val)
+
+
+BASE_DIR = default_base_dir()
+
+
+def default_config_template(prog: str | None = None) -> str:
+    cmd = prog or prog_name()
+    bdir = _os_default_base_dir(cmd)
+    lines = [
+        f"# {cmd} configuration file",
+        "# Lines starting with # are comments. Environment variables override these settings.",
+        "",
+        "# Base directory where session scripts (<step>.sh) and logs (<step>.txt) are stored:",
+        f"base_dir = {bdir}",
+        "",
+        "# Working directory for executing blocks:",
+        "#   auto -> current Git repository root (or current directory if outside Git)",
+        "#   cwd  -> always use the current working directory ($PWD)",
+        "#   /path/to/dir -> explicit directory path",
+        "work_dir = auto",
+        "",
+        "# Default target file for --agents-install when no file argument is passed:",
+        "agents_file = AGENTS.md",
+        "",
+        "# Clipboard behavior after a block finishes:",
+        "#   prompt -> press Enter to copy output to clipboard or Esc to skip (default)",
+        "#   auto   -> copy output to clipboard automatically without prompting",
+        "#   never  -> do not offer or copy to clipboard",
+        "clipboard = prompt",
+        "",
+        "# Show output size in bytes and estimated token counts (Claude / GPT / Gemini):",
+        "token_stats = true",
+        "",
+        "# Shell executable used for syntax checking (-n) and running blocks:",
+        "shell = bash",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def cmd_show_config() -> int:
+    prog = prog_name()
+    cfg_path = config_file_path()
+    exists_str = "exists" if cfg_path.is_file() else "not created yet (run --init-config)"
+    sys.stdout.write(f"Config file: {cfg_path} ({exists_str})\n\n")
+    sys.stdout.write("Active settings:\n")
+    for k in ("base_dir", "work_dir", "agents_file", "clipboard", "token_stats", "shell"):
+        val, src = get_setting(k, prog=prog)
+        sys.stdout.write(f"  {k:<12} = {val}  (from {src})\n")
+    return 0
+
+
+def cmd_init_config(force: bool = False) -> int:
+    prog = prog_name()
+    cfg_path = config_file_path()
+    if cfg_path.exists() and not force:
+        sys.stderr.write(f"{prog}: config file already exists at {cfg_path} (use --force to overwrite)\n")
+        return 2
+    cfg_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    cfg_path.write_text(default_config_template(prog), encoding="utf-8")
+    sys.stdout.write(f"{prog}: wrote default configuration to {cfg_path}\n")
+    return 0
+
+
+def usage_text() -> str:
+    prog = prog_name()
+    bdir = default_base_dir(prog)
+    cpath = config_file_path()
+    afile, _ = get_setting("agents_file", prog=prog)
+    return (__doc__ or "").format(prog=prog, base_dir=bdir, config_path=cpath, agents_file=afile)
+
+
+def agents_markdown(prog: str | None = None, with_markers: bool = True) -> str:
+    cmd = prog or prog_name()
+    f3 = chr(96) * 3
+    lines = []
+    if with_markers:
+        lines.append(f"<!-- run_block:start v{VERSION} -->")
+    lines.extend([
+        f"## Terminal blocks (`{cmd}` v{VERSION})",
+        "",
+        "You have no direct shell access. Run commands by giving the user a",
+        f"`{cmd}` terminal block.",
+        "",
+        "**CRITICAL — ONE BLOCK PER MESSAGE:**",
+        f"- Give **at most ONE** executable `{cmd}` block per message.",
+        "- Place it at the **very end** of your reply with **zero trailing text** after the closing fence.",
+        "- Never assume a block ran until the user pastes its output.",
+        "",
+        "### 1. Normal block (`<session>/<step>`)",
+        "",
+        "Use the session ID (`s1`, `s2`, ...) and the next sequential step number (`1`, `2`, `3`, ...):",
+        "",
+        f"{f3}bash",
+        f"{cmd} s1/1 <<'RUN_BLOCK'",
+        "git status -sb",
+        "RUN_BLOCK",
+        f"{f3}",
+        "",
+        "- Runs in `bash` from the repository root (or current working directory).",
+        "- Every launched step consumes its number, even if it fails. Never reuse a step number or skip ahead.",
+        "- **Markdown fence safety:** Keep a blank line before the opening fence. Never put literal triple backticks or the heredoc delimiter (`RUN_BLOCK` / `RUN_FIX`) inside a block body (in Python, build backticks as `F3 = chr(96) * 3`).",
+        "",
+        "### 2. Fixing a failed block (`--fix <session>/<target>`)",
+        "",
+        "When a long block fails on a small mistake and re-running is safe, patch the previous script (`text` in Python) instead of regenerating the whole block:",
+        "",
+        f"{f3}bash",
+        f"{cmd} --fix s1/2 <<'RUN_FIX'",
+        "old = 'wrong_command'",
+        "new = 'right_command'",
+        "assert text.count(old) == 1",
+        "text = text.replace(old, new, 1)",
+        "RUN_FIX",
+        f"{f3}",
+        "",
+        "- Modifies `text` from `<target>` and runs it as `<target>_1` (fixing `2` runs `2_1`; fixing `2_1` runs `2_2`).",
+        "- If the failed run already partially changed state and is not idempotent, use the next normal step (`s1/3`) instead of `--fix`.",
+    ])
+    if with_markers:
+        lines.append(AGENTS_END_MARKER)
+    return "\n".join(lines)
+
+def cmd_agent_install(target_arg: str | None = None, prog: str | None = None) -> int:
+    cmd = prog or prog_name()
+    if target_arg:
+        target = Path(target_arg).expanduser()
+    else:
+        default_name, _ = get_setting("agents_file", prog=cmd)
+        target = Path.cwd() / default_name
+    block = agents_markdown(cmd, with_markers=True)
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(block + "\n", encoding="utf-8")
+        sys.stdout.write(f"{cmd}: created {target} with {cmd} v{VERSION} instructions\n")
+        return 0
+
+    content = target.read_text(encoding="utf-8")
+    marker_re = re.compile(r"<!--\s*run_block:start[^>]*-->.*?<!--\s*run_block:end\s*-->", flags=re.DOTALL)
+    if marker_re.search(content):
+        new_content = marker_re.sub(lambda _: block, content, count=1)
+        if new_content == content:
+            sys.stdout.write(f"{cmd}: {target} already has up-to-date {cmd} v{VERSION} instructions\n")
+        else:
+            target.write_text(new_content, encoding="utf-8")
+            sys.stdout.write(f"{cmd}: updated {cmd} instructions to v{VERSION} in {target}\n")
+        return 0
+
+    # Fallback: check if there is an unmarked '## ... Terminal blocks (...) — the model's tools' section
+    sec_re = re.compile(r"(^##\s+(?:\d+\.\s+)?Terminal blocks\s+\([^\n]*\n.*?)(?=^##\s+|\Z)", flags=re.MULTILINE | re.DOTALL)
+    if sec_re.search(content):
+        new_content = sec_re.sub(lambda _: block + "\n\n", content, count=1)
+        target.write_text(new_content, encoding="utf-8")
+        sys.stdout.write(f"{cmd}: wrapped and updated existing Terminal blocks section to v{VERSION} in {target}\n")
+        return 0
+
+    sep = "" if not content.strip() else ("\n" if content.endswith("\n\n") else ("\n\n" if content.endswith("\n") else "\n\n"))
+    target.write_text(content + sep + block + "\n", encoding="utf-8")
+    sys.stdout.write(f"{cmd}: appended {cmd} v{VERSION} instructions to {target}\n")
+    return 0
+
+
+def get_work_dir() -> Path:
+    val, _ = get_setting("work_dir")
+    if val.lower() == "cwd":
+        return Path.cwd()
+    if val.lower() != "auto":
+        return Path(val).expanduser()
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            top = Path(r.stdout.strip())
+            if top.is_dir():
+                return top
+    except Exception:
+        pass
+    return Path.cwd()
+
+
+def clipboard_mode() -> str:
+    val, _ = get_setting("clipboard")
+    if val in ("never", "off", "0", "false", "no"):
+        return "never"
+    if val in ("auto", "always"):
+        return "auto"
+    return "prompt"
+
+
+def no_clipboard() -> bool:
+    return clipboard_mode() == "never"
+
+
+def in_run_block() -> bool:
+    return os.environ.get("IN_RUN_BLOCK") == "1"
+
+
+# --- Detailed pre-execution block plan and safety scanner ---
+RISK_RULES: list[tuple[str, str, re.Pattern[str]]] = [
+    (
+        "git-destructive",
+        "destructive Git operation",
+        re.compile(
+            r"\bgit\s+(?:reset\s+--hard|clean\s+-[A-Za-z]*f|push\s+[^\n]*(?:--force|-f\b|--delete)|branch\s+-D\b|tag\s+-d\b|checkout\s+--\s+\.|restore\s+\.|rebase\b|filter-branch\b)"
+        ),
+    ),
+    (
+        "external-write",
+        "network or remote repository write",
+        re.compile(
+            r"(?:\bgit\s+push\b|\b(?:curl|wget)\b[^\n]*(?:-X\s*(?:POST|PUT|DELETE|PATCH)\b|--data\b|--form\b|\s-d\s|\s-F\s)|\b(?:scp|rsync)\s)"
+        ),
+    ),
+    (
+        "fs-destructive",
+        "recursive or destructive file deletion/overwrite",
+        re.compile(
+            r"(?:\brm\s+-[A-Za-z]*(?:r|f)[A-Za-z]*\b|\bshutil\.rmtree\s*\(|\bos\.(?:remove|unlink)\s*\(|\bdd\s+[^\n]*\bof=|\b(?:mkfs|shred|fdisk)\b|>\s*(?:/etc/|~/.ssh/|\$HOME/\.ssh/))"
+        ),
+    ),
+    (
+        "privilege-system",
+        "privilege escalation or system modification",
+        re.compile(
+            r"(?:\b(?:sudo|doas|pkexec|chown|systemctl|service|killall|pkill)\b|\bkill\s+-9\b|\bchmod\s+[0-7]*777\b|\b(?:apt|apt-get|yum|dnf|pacman|brew)\s+(?:install|remove|purge)\b|\bpip3?\s+install\b|\bnpm\s+install\s+-g\b)"
+        ),
+    ),
+    (
+        "secrets-exposure",
+        "shell trace or credential file access",
+        re.compile(
+            r"(?:\bset\s+-[A-Za-z]*x\b|\bbash\s+-[A-Za-z]*x\b|\.ssh/id_[A-Za-z0-9_]+(?!\.pub)\b|\.netrc\b|\.aws/credentials\b)"
+        ),
+    ),
+    (
+        "remote-exec",
+        "piping remote content into a shell or eval",
+        re.compile(
+            r"(?:\b(?:curl|wget)\b[^\n]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|python3?)\b|\beval\s+)"
+        ),
+    ),
+]
+
+PY_HEREDOC_START_RE = re.compile(r"python3?\s+-[^\n]*<<-?['\"]?([A-Za-z0-9_]+)['\"]?")
+
+
+def _add_unique(items: list[str], val: str, limit: int = 12) -> None:
+    clean = val.strip()
+    if clean and clean not in items and len(items) < limit:
+        items.append(clean)
+
+
+def _extract_py_path_expr(node: ast.AST, var_map: dict[str, str]) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name) and node.id in var_map:
+        return var_map[node.id]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        left = _extract_py_path_expr(node.left, var_map)
+        right = _extract_py_path_expr(node.right, var_map)
+        if right:
+            return f"{left}/{right}" if left and not left.startswith("<") else right
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Name) and node.func.id == "Path" and node.args:
+            return _extract_py_path_expr(node.args[0], var_map)
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "home":
+            return "~"
+    return None
+
+
+def _analyze_python_ast(
+    py_code: str,
+    writes: list[str],
+    reads: list[str],
+    execs: list[str],
+    py_risks: list[dict[str, object]],
+    start_line_offset: int = 0,
+) -> None:
+    try:
+        tree = ast.parse(py_code)
+    except Exception:
+        return
+    var_map: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            p = _extract_py_path_expr(node.value, var_map)
+            if p:
+                var_map[node.targets[0].id] = p
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        unparsed = ast.unparse(node) if hasattr(ast, "unparse") else ""
+        if isinstance(node.func, ast.Attribute):
+            attr = node.func.attr
+            owner = _extract_py_path_expr(node.func.value, var_map)
+            mod_name = node.func.value.id if isinstance(node.func.value, ast.Name) else ""
+            if attr in ("write_text", "write_bytes"):
+                _add_unique(writes, owner or "file (python)")
+            elif attr in ("read_text", "read_bytes") and owner:
+                _add_unique(reads, owner)
+            elif attr == "parse" and mod_name == "ast":
+                _add_unique(execs, "ast.parse")
+            elif mod_name in ("shutil", "os") and attr in ("copy", "copy2", "move", "replace") and len(node.args) >= 2:
+                dst = _extract_py_path_expr(node.args[-1], var_map)
+                _add_unique(writes, dst or f"{mod_name}.{attr}")
+            elif (mod_name == "shutil" and attr == "rmtree") or (mod_name == "os" and attr in ("remove", "unlink", "system")) or attr == "unlink":
+                target = _extract_py_path_expr(node.args[0], var_map) if node.args else owner
+                _add_unique(writes, f"{attr}({target or '...'})")
+                if mod_name in ("shutil", "os"):
+                    py_risks.append({
+                        "line": start_line_offset + getattr(node, "lineno", 1),
+                        "category": "fs-destructive",
+                        "description": "destructive Python call",
+                        "snippet": unparsed or f"{mod_name}.{attr}(...)",
+                    })
+        elif isinstance(node.func, ast.Name) and node.func.id == "open" and len(node.args) >= 2:
+            mode_node = node.args[1]
+            if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
+                if any(m in mode_node.value for m in ("w", "a", "x")):
+                    target = _extract_py_path_expr(node.args[0], var_map)
+                    _add_unique(writes, target or "open(..., 'w')")
+
+
+def summarize_script_actions(script_text: str) -> dict[str, object]:
+    lines = script_text.splitlines()
+    non_empty = [l for l in lines if l.strip()]
+    writes: list[str] = []
+    reads: list[str] = []
+    git_cmds: list[str] = []
+    exec_cmds: list[str] = []
+    cd_dirs: list[str] = []
+    operations: list[tuple[str, str]] = []
+    py_blocks = 0
+    py_eof: str | None = None
+    py_buf: list[str] = []
+    py_start = 0
+
+    for idx, raw in enumerate(lines, start=1):
+        s = raw.strip()
+        if py_eof is not None:
+            if s == py_eof:
+                pw: list[str] = []
+                pr: list[str] = []
+                pe: list[str] = []
+                _analyze_python_ast("\n".join(py_buf), pw, pr, pe, [], py_start)
+                for x in pw:
+                    _add_unique(writes, x)
+                for x in pr:
+                    _add_unique(reads, x)
+                for x in pe:
+                    _add_unique(exec_cmds, x)
+                parts = []
+                if pw:
+                    parts.append("writes: " + ", ".join(pw))
+                if pr:
+                    parts.append("reads: " + ", ".join(pr))
+                if pe:
+                    parts.append("calls: " + ", ".join(pe))
+                desc = f"{len(py_buf)} lines" + (f" — {'; '.join(parts)}" if parts else "")
+                operations.append((f"Python #{py_blocks}", desc))
+                py_eof = None
+                py_buf = []
+            else:
+                py_buf.append(raw)
+            continue
+        if not s or s.startswith("#"):
+            continue
+        m_py = PY_HEREDOC_START_RE.search(s)
+        if m_py:
+            py_blocks += 1
+            py_eof = m_py.group(1)
+            py_buf = []
+            py_start = idx
+            continue
+        if re.match(r"^(?:echo|printf)\b", s) and ">" not in s:
+            continue
+        if re.match(r"^set\s+[+-][A-Za-z]", s):
+            continue
+        m_cd = re.match(r"^cd\s+(.+)$", s)
+        if m_cd:
+            _add_unique(cd_dirs, m_cd.group(1).strip())
+            continue
+        if re.match(r"^git\s+", s):
+            _add_unique(git_cmds, s)
+            operations.append(("Git", s))
+            continue
+        if re.match(r"^(?:rm|cp|mv|mkdir|chmod|touch)\s+", s):
+            _add_unique(writes, s)
+            operations.append(("Write/FS", s))
+            continue
+        if re.match(r"^(?:cat|grep|ls|head|tail|find|which|command\s+-v|wc|stat|file)\s+", s):
+            _add_unique(reads, s)
+            operations.append(("Read", s))
+            continue
+        operations.append(("Exec", s))
+        _add_unique(exec_cmds, s)
+
+    rows: list[tuple[str, str]] = []
+    for label, bucket in (
+        ("Write/FS", writes),
+        ("Read", reads),
+        ("Git", git_cmds),
+        ("Exec", exec_cmds),
+    ):
+        if bucket:
+            rows.append((label, ", ".join(bucket)))
+    meta = f"{len(non_empty)} line{'s' if len(non_empty) != 1 else ''}"
+    if py_blocks:
+        meta += f", bash + {py_blocks} python block{'s' if py_blocks != 1 else ''}"
+    else:
+        meta += ", bash"
+    return {
+        "meta": meta,
+        "rows": rows,
+        "operations": operations,
+        "cd_dirs": cd_dirs,
+        "work_dir": str(get_work_dir()),
+    }
+
+
+def scan_script_risks(script_text: str) -> list[dict[str, object]]:
+    findings: list[dict[str, object]] = []
+    py_eof_token: str | None = None
+    py_buf: list[str] = []
+    py_start = 0
+    for idx, raw_line in enumerate(script_text.splitlines(), start=1):
+        stripped = raw_line.strip()
+        if py_eof_token is not None:
+            if stripped == py_eof_token:
+                _analyze_python_ast("\n".join(py_buf), [], [], [], findings, py_start)
+                py_eof_token = None
+                py_buf = []
+            else:
+                py_buf.append(raw_line)
+            continue
+
+        if not stripped or stripped.startswith("#"):
+            continue
+        m_py = PY_HEREDOC_START_RE.search(stripped)
+        if m_py:
+            py_eof_token = m_py.group(1)
+            py_buf = []
+            py_start = idx
+            continue
+        for category, desc, pat in RISK_RULES:
+            if pat.search(stripped):
+                clean_snip = re.sub(r"\s+", " ", stripped).replace("│", "|")
+                findings.append(
+                    {
+                        "line": idx,
+                        "category": category,
+                        "description": desc,
+                        "snippet": clean_snip,
+                    }
+                )
+                break
+    return findings
+
+
+def open_tty():
+    tty_in_name = "CONIN$" if os.name == "nt" else "/dev/tty"
+    tty_out_name = "CONOUT$" if os.name == "nt" else "/dev/tty"
+    return (
+        open(tty_out_name, "w", encoding="utf-8", errors="replace"),
+        open(tty_in_name, "r", encoding="utf-8", errors="replace"),
+    )
+
+
+def flush_tty_input(tty_r) -> None:
+    if HAS_PTY and termios is not None:
+        try:
+            termios.tcflush(tty_r.fileno(), termios.TCIFLUSH)
+        except Exception:
+            pass
+
+
+def read_enter_or_esc(tty_r) -> bool:
+    """Wait for a single key: Enter returns True (copy), Esc returns False (skip)."""
+    flush_tty_input(tty_r)
+    if not HAS_PTY or termios is None or tty is None:
+        ans = tty_r.readline().strip().lower()
+        return ans not in ("n", "no", "esc", "\x1b")
+    fd = tty_r.fileno()
+    try:
+        old_attrs = termios.tcgetattr(fd)
+    except Exception:
+        ans = tty_r.readline().strip().lower()
+        return ans not in ("n", "no", "esc", "\x1b")
+    try:
+        tty.setraw(fd, termios.TCSANOW)
+        while True:
+            ch = os.read(fd, 1)
+            if not ch:
+                return False
+            if ch in (b"\r", b"\n", b"y", b"Y"):
+                return True
+            if ch in (b"n", b"N", b"q", b"Q", b"\x03", b"\x04"):
+                return False
+            if ch == b"\x1b":
+                # Distinguish standalone Esc from multi-byte escape sequences (like arrow keys)
+                rlist, _, _ = select.select([fd], [], [], 0.05)
+                if rlist:
+                    os.read(fd, 32)
+                    continue
+                return False
+    finally:
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+        except Exception:
+            pass
+
+
+def _wrap_labeled_items(items: list[tuple[str, str]], max_width: int, indent: str = "  ") -> list[str]:
+    if not items:
+        return []
+    tag_w = max(len(f"[{k}]") for k, _ in items)
+    out: list[str] = []
+    for k, v in items:
+        tag = f"[{k}]".ljust(tag_w)
+        prefix = f"{indent}{tag}  "
+        sub_indent = " " * len(prefix)
+        avail = max(24, max_width - len(prefix))
+        wrapped = textwrap.wrap(v, width=avail, break_long_words=True, break_on_hyphens=False) or [v]
+        out.append(prefix + wrapped[0])
+        for cont in wrapped[1:]:
+            out.append(sub_indent + cont)
+    return out
+
+
+def format_safety_box(
+    label: str,
+    findings: list[dict[str, object]],
+    default_yes: bool = False,
+    summary: dict[str, object] | None = None,
+) -> tuple[str, int, int]:
+    meta_str = str(summary.get('meta', '')) if summary else ''
+    if findings:
+        plural = "s" if len(findings) != 1 else ""
+        hdr_detail = f"{meta_str} | {len(findings)} safety warning{plural}" if meta_str else f"{len(findings)} safety warning{plural}"
+        title = f" [{label}] [!] BLOCK PLAN ({hdr_detail}) "
+    elif meta_str:
+        title = f" [{label}] BLOCK PLAN ({meta_str}) "
+    else:
+        title = f" [{label}] BLOCK PLAN "
+    prompt_suffix = "[Y/n]: " if default_yes else "[y/n]: "
+    prompt_line = f"-> Execute this block? {prompt_suffix}"
+    term_cols = shutil.get_terminal_size((100, 24)).columns
+    max_row_len = max(64, term_cols - 6)
+
+    content_lines: list[str] = []
+    if summary:
+        wdir = str(summary.get("work_dir") or "")
+        cd_dirs = list(summary.get("cd_dirs") or [])
+        if wdir:
+            wline = f"Workdir: {wdir}" + (f"  (cd -> {', '.join(cd_dirs)})" if cd_dirs else "")
+            content_lines.extend(textwrap.wrap(wline, width=max_row_len) or [wline])
+        ops = list(summary.get("operations") or [])
+        if ops:
+            if content_lines:
+                content_lines.append("")
+            content_lines.append("Operations:")
+            shown_ops = ops[:16]
+            content_lines.extend(_wrap_labeled_items(shown_ops, max_row_len, indent="  "))
+            if len(ops) > 16:
+                content_lines.append(f"  ... (+{len(ops) - 16} more operations)")
+
+    if findings:
+        if content_lines:
+            content_lines.append("")
+            content_lines.append("Safety warnings:")
+            w_indent = "  "
+        else:
+            w_indent = ""
+        warn_items = [(str(f["category"]), str(f["snippet"])) for f in findings]
+        content_lines.extend(_wrap_labeled_items(warn_items, max_row_len, indent=w_indent))
+
+    inner_width = max(
+        display_width(title) + 2,
+        display_width(prompt_line) + 3,
+        *(display_width(b) for b in content_lines),
+        52,
+    )
+    dashes = max(1, inner_width + 2 - display_width(title) - 1)
+    top = f"┌─{title}{'─' * dashes}┐"
+    bottom = f"└─{'─' * inner_width}─┘"
+    rows = [pad_box_line(b, inner_width) for b in content_lines]
+    if content_lines:
+        rows.append(pad_box_line("", inner_width))
+    rows.append(pad_box_line(prompt_line, inner_width))
+    box = "\n".join([top, *rows, bottom])
+    cursor_col_offset = 2 + display_width(prompt_line)
+    return box, inner_width, cursor_col_offset
+
+
+def confirm_execution(label: str, script_text: str, summary: dict[str, object] | None = None) -> bool:
+    if in_run_block():
+        return True
+    findings = scan_script_risks(script_text)
+    if not sys.stdout.isatty() or no_clipboard():
+        if findings:
+            for f in findings:
+                sys.stdout.write(f"[{label}] safety warning [{f['category']}]: {f['snippet']}\n")
+            sys.stdout.flush()
+        return True
+    default_yes = (len(findings) == 0)
+    box, inner_width, cursor_offset = format_safety_box(label, findings, default_yes=default_yes, summary=summary)
+    bottom = f"└─{'─' * inner_width}─┘"
+    try:
+        tty_w, tty_r = open_tty()
+        with tty_w, tty_r:
+            flush_tty_input(tty_r)
+            tty_w.write(f"\n{box}\r\033[1A\033[{cursor_offset}C")
+            tty_w.flush()
+            while True:
+                ans = tty_r.readline().strip().lower()
+                if default_yes:
+                    approved = ans in ("", "y", "yes")
+                    break
+                if ans in ("y", "yes"):
+                    approved = True
+                    break
+                if ans in ("n", "no"):
+                    approved = False
+                    break
+                reprompt = "-> Please type 'y' to execute or 'n' to abort [y/n]: "
+                r_offset = 2 + display_width(reprompt)
+                tty_w.write(f"\033[1A\r{pad_box_line(reprompt, inner_width)}\n{bottom}\r\033[1A\033[{r_offset}C")
+                tty_w.flush()
+            status_line = "✓ Approved by user." if approved else f"✗ Aborted by user (re-run with: {prog_name()} --retry {label})"
+            tty_w.write(f"\033[1A\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
+            tty_w.flush()
+            return approved
+    except OSError:
+        return True
+
+
+def ensure_base() -> Path:
+    BASE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        BASE_DIR.chmod(0o700)
+    except OSError:
+        pass
+    return BASE_DIR
+
+
+def next_session_name(base: Path) -> str:
+    used = set()
+    for p in base.iterdir():
+        m = re.fullmatch(r"s(\d+)", p.name)
+        if m:
+            used.add(int(m.group(1)))
+    n = 1
+    while n in used:
+        n += 1
+    return f"s{n}"
+
+
+def start_session(name: str | None = None, force: bool = False) -> Path:
+    base = ensure_base()
+    if not name:
+        name = next_session_name(base)
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        raise SystemExit(f"{prog_name()}: invalid session name: {name!r}")
+    sdir = base / name
+    if sdir.exists():
+        if not force:
+            if not sys.stdin.isatty():
+                raise SystemExit(f"{prog_name()}: session {sdir} already exists (use --force to overwrite)")
+            sys.stderr.write(f"Session {sdir} already exists. Overwrite? [y/N] ")
+            sys.stderr.flush()
+            ans = sys.stdin.readline().strip().lower()
+            if ans not in ("y", "yes"):
+                raise SystemExit(f"{prog_name()}: aborted")
+        shutil.rmtree(sdir)
+    sdir.mkdir(mode=0o700, parents=True)
+    return sdir
+
+
+def parse_ref(ref: str, allow_fix_step: bool) -> tuple[str, str]:
+    pattern = r"^([A-Za-z0-9._-]+)/(\d+(?:_\d+)?)$" if allow_fix_step else r"^([A-Za-z0-9._-]+)/(\d+)$"
+    m = re.fullmatch(pattern, ref.strip())
+    if not m:
+        kind = "<session>/<step> (e.g. s1/2 or s1/2_1)" if allow_fix_step else "<session>/<step> (e.g. s1/1)"
+        raise SystemExit(f"{prog_name()}: invalid block reference {ref!r}; expected {kind}")
+    return m.group(1), m.group(2)
+
+
+def next_fix_step(step: str) -> str:
+    if "_" in step:
+        base, sub = step.split("_", 1)
+        return f"{base}_{int(sub) + 1}"
+    return f"{step}_1"
+
+
+def write_private(path: Path, content: str, overwrite: bool = False) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_TRUNC if overwrite else os.O_EXCL)
+    fd = os.open(path, flags, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def not_run_exit(label: str, sdir: Path, step_name: str, out_path: Path, msg: str, rc: int = 2) -> int:
+    sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    line = msg if msg.endswith("\n") else msg + "\n"
+    sys.stdout.write(line)
+    sys.stdout.flush()
+    err_target = sdir / f"{step_name}.error.txt" if out_path.exists() else out_path
+    try:
+        write_private(err_target, line, overwrite=True)
+        offer_clipboard_copy(label, err_target, ok=False, rc=rc)
+    except Exception:
+        pass
+    return rc
+
+
+# --- Built-in token and byte statistics ---
+_ENC = None
+_ENC_TRIED = False
+
+
+def gpt_encoder():
+    global _ENC, _ENC_TRIED
+    if not _ENC_TRIED:
+        _ENC_TRIED = True
+        try:
+            import tiktoken  # type: ignore[import-not-found]
+            _ENC = tiktoken.get_encoding("o200k_base")
+        except Exception:
+            _ENC = None
+    return _ENC
+
+
+def count_tokens(data: bytes) -> dict[str, int | bool]:
+    text = data.decode("utf-8", "replace")
+    chars = len(text)
+    enc = gpt_encoder()
+    if enc is not None:
+        gpt = len(enc.encode(text, disallowed_special=()))
+    else:
+        gpt = math.ceil(chars / 4)
+    return {
+        "bytes": len(data),
+        "claude": math.ceil(chars / 3.5),
+        "gpt": gpt,
+        "gpt_exact": enc is not None,
+        "gemini": math.ceil(chars / 4),
+    }
+
+
+def format_stats(data: bytes) -> str:
+    s = count_tokens(data)
+    mark = "" if s["gpt_exact"] else "~"
+    size, claude, gpt, gemini = s["bytes"], s["claude"], s["gpt"], s["gemini"]
+    return f"Size: {size:,} bytes | Tokens: Claude ~{claude:,} | GPT {mark}{gpt:,} | Gemini ~{gemini:,}"
+
+
+def stats_line(path: Path) -> str | None:
+    enabled, _ = get_setting("token_stats")
+    if enabled == "false":
+        return None
+    try:
+        return format_stats(path.read_bytes())
+    except Exception:
+        return None
+
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+CR_LINE_RE = re.compile(r"[^\n]*\r(?!\n)")
+
+
+def run_script(
+    label: str,
+    script_path: Path,
+    out_path: Path,
+    header_lines: list[str] | None = None,
+    cleanup_on_abort: list[Path] | None = None,
+) -> int:
+    work_dir = get_work_dir()
+    shell_bin, _ = get_setting("shell")
+    script_text = script_path.read_text(encoding="utf-8")
+
+    chk = subprocess.run(
+        [shell_bin, "-n", str(script_path)],
+        cwd=work_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    if chk.returncode != 0:
+        start_line = f"[{label}] START (script: {script_path})\n\n"
+        msg = chk.stdout or "syntax check failed\n"
+        end_line = f"[{label}] END (syntax error, exit {chk.returncode}) — output: {out_path}\n"
+        full_output = start_line + msg + end_line
+        sys.stdout.write(start_line + msg)
+        sys.stdout.flush()
+        write_private(out_path, full_output)
+        offer_clipboard_copy(label, out_path, ok=False, rc=chk.returncode)
+        return chk.returncode
+
+    aborted_marker = script_path.with_suffix(".aborted")
+    summary_obj = summarize_script_actions(script_text)
+    if not confirm_execution(label, script_text, summary=summary_obj):
+        write_private(aborted_marker, "aborted\n", overwrite=True)
+        return not_run_exit(label, script_path.parent, script_path.stem, out_path, f"[{label}] NOT RUN: aborted by user (re-run with: {prog_name()} --retry {label})", rc=130)
+    aborted_marker.unlink(missing_ok=True)
+
+    start_line = f"[{label}] START (script: {script_path})\n"
+    log_chunks: list[str] = [start_line]
+    sys.stdout.write(start_line)
+    for h in header_lines or []:
+        log_chunks.append(h)
+        sys.stdout.write(h)
+    log_chunks.append("\n")
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+    tty_in = None
+    master_fd = None
+    slave_fd = None
+    if HAS_PTY and sys.stdout.isatty() and not no_clipboard():
+        try:
+            tty_in = open("/dev/tty", "rb", buffering=0)
+            master_fd, slave_fd = pty.openpty()
+            attrs = termios.tcgetattr(slave_fd)
+            attrs[1] &= ~termios.ONLCR
+            termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
+        except OSError:
+            if tty_in is not None:
+                tty_in.close()
+                tty_in = None
+            if master_fd is not None:
+                os.close(master_fd)
+                master_fd = None
+            if slave_fd is not None:
+                os.close(slave_fd)
+                slave_fd = None
+
+    child_env = {**os.environ, "IN_RUN_BLOCK": "1"}
+    if master_fd is not None and slave_fd is not None:
+        try:
+            proc = subprocess.Popen(
+                [shell_bin, str(script_path)],
+                cwd=work_dir,
+                stdin=tty_in if tty_in is not None else slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                env=child_env,
+                close_fds=True,
+            )
+            os.close(slave_fd)
+            slave_fd = None
+            while True:
+                try:
+                    chunk = os.read(master_fd, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                text = chunk.decode("utf-8", "replace")
+                log_chunks.append(text)
+                sys.stdout.write(text)
+                sys.stdout.flush()
+            rc = proc.wait()
+        finally:
+            if slave_fd is not None:
+                os.close(slave_fd)
+            if master_fd is not None:
+                os.close(master_fd)
+            if tty_in is not None:
+                tty_in.close()
+    else:
+        proc = subprocess.Popen(
+            [shell_bin, str(script_path)],
+            cwd=work_dir,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=child_env,
+        )
+        assert proc.stdout is not None
+        while True:
+            chunk = proc.stdout.read1(4096) if hasattr(proc.stdout, "read1") else proc.stdout.read(4096)
+            if not chunk:
+                break
+            text = chunk.decode("utf-8", "replace")
+            log_chunks.append(text)
+            sys.stdout.write(text)
+            sys.stdout.flush()
+        proc.stdout.close()
+        rc = proc.wait()
+    if log_chunks and not log_chunks[-1].endswith("\n"):
+        log_chunks.append("\n")
+        sys.stdout.write("\n")
+    end_line = f"\n[{label}] END (exit {rc}) — output: {out_path}\n"
+    log_chunks.append(end_line)
+    if in_run_block() or not sys.stdout.isatty() or clipboard_mode() != "prompt":
+        sys.stdout.write(end_line)
+    sys.stdout.flush()
+    full_output = CR_LINE_RE.sub("", ANSI_RE.sub("", "".join(log_chunks))).replace("\r\n", "\n")
+    write_private(out_path, full_output)
+    clip_target = resolve_clipboard_target(out_path, full_output)
+    offer_clipboard_copy(label, clip_target, ok=(rc == 0), rc=rc)
+    return rc
+
+
+def resolve_clipboard_target(out_path: Path, full_output: str) -> Path:
+    matches = re.findall(
+        r"^\[[A-Za-z0-9._-]+\] Attach: (\S+)\s*$",
+        full_output,
+        flags=re.MULTILINE,
+    )
+    if matches:
+        candidate = Path(matches[-1])
+        if candidate.is_file():
+            return candidate
+    return out_path
+
+
+def clipboard_command(out_path: Path) -> tuple[list[str], str] | None:
+    if shutil.which("xclip") and os.environ.get("DISPLAY"):
+        return ["xclip", "-selection", "clipboard"], f"xclip -selection clipboard < {out_path}"
+    if shutil.which("wl-copy") and os.environ.get("WAYLAND_DISPLAY"):
+        return ["wl-copy"], f"wl-copy < {out_path}"
+    if shutil.which("pbcopy"):
+        return ["pbcopy"], f"pbcopy < {out_path}"
+    if shutil.which("xsel") and os.environ.get("DISPLAY"):
+        return ["xsel", "--clipboard", "--input"], f"xsel --clipboard --input < {out_path}"
+    if shutil.which("clip.exe"):
+        return ["clip.exe"], f"clip.exe < {out_path}"
+    return None
+
+
+def copy_file_to_clipboard(cmd: list[str], out_path: Path) -> bool:
+    try:
+        with open(out_path, "rb") as f_in:
+            r = subprocess.run(
+                cmd,
+                stdin=f_in,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def display_width(text: str) -> int:
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in text)
+
+
+def pad_box_line(text: str, inner_width: int) -> str:
+    pad = max(0, inner_width - display_width(text))
+    return f"│ {text}{' ' * pad} │"
+
+
+def format_clipboard_box(
+    label: str, out_path: Path, ok: bool = True, rc: int | None = None, stats: str | None = None
+) -> tuple[str, int, int]:
+    if rc is not None:
+        state = f"END (exit {rc})"
+    elif ok:
+        state = "END (exit 0)"
+    else:
+        state = "END"
+    title = f" [{label}] {state} "
+    line2 = f"-> Press Enter to copy {out_path} to clipboard (Esc to skip) "
+    copied_line = f"✓ Copied {out_path} to clipboard."
+    stats_width = display_width(stats) if stats else 0
+    inner_width = max(
+        display_width(title) + 2,
+        display_width(line2) + 1,
+        display_width(copied_line),
+        stats_width,
+    )
+    dashes = max(1, inner_width + 2 - display_width(title) - 1)
+    top = f"┌─{title}{'─' * dashes}┐"
+    bottom = f"└─{'─' * inner_width}─┘"
+    rows = [pad_box_line(line2, inner_width)]
+    if stats:
+        rows.insert(0, pad_box_line(stats, inner_width))
+    box = "\n".join([top, *rows, bottom])
+    cursor_col_offset = 2 + display_width(line2)
+    return box, inner_width, cursor_col_offset
+
+
+def offer_clipboard_copy(
+    label: str, out_path: Path, ok: bool = True, rc: int | None = None
+) -> None:
+    if in_run_block():
+        return
+    mode = clipboard_mode()
+    if mode == "never":
+        return
+    clip = clipboard_command(out_path)
+    if clip is None:
+        return
+    cmd, cmd_str = clip
+    if mode == "auto":
+        if copy_file_to_clipboard(cmd, out_path):
+            sys.stdout.write(f"✓ Copied {out_path} to clipboard.\n")
+        else:
+            sys.stdout.write(f"[{label}] clipboard: {cmd_str}\n")
+        sys.stdout.flush()
+        return
+    if not sys.stdout.isatty():
+        sys.stdout.write(f"[{label}] clipboard: {cmd_str}\n")
+        sys.stdout.flush()
+        return
+    box, inner_width, cursor_offset = format_clipboard_box(
+        label, out_path, ok=ok, rc=rc, stats=stats_line(out_path)
+    )
+    bottom = f"└─{'─' * inner_width}─┘"
+    try:
+        tty_w, tty_r = open_tty()
+        with tty_w, tty_r:
+            tty_w.write(f"\n{box}\r\033[1A\033[{cursor_offset}C")
+            tty_w.flush()
+            if read_enter_or_esc(tty_r):
+                if copy_file_to_clipboard(cmd, out_path):
+                    status_line = f"✓ Copied {out_path} to clipboard."
+                else:
+                    status_line = f"✗ Clipboard copy failed; run: {cmd_str}"
+            else:
+                status_line = "Skipped clipboard copy."
+            tty_w.write(f"\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
+            tty_w.flush()
+    except OSError:
+        sys.stdout.write(f"[{label}] clipboard: {cmd_str}\n")
+        sys.stdout.flush()
+
+
+def parse_version_from_source(source: str) -> str | None:
+    m = re.search(r'^VERSION\s*=\s*["\x27]([^"\x27]+)["\x27]', source, flags=re.MULTILINE)
+    return m.group(1) if m else None
+
+
+def version_tuple(v: str) -> tuple[int, ...]:
+    parts = []
+    for p in re.split(r"[^0-9]+", v):
+        if p:
+            parts.append(int(p))
+    return tuple(parts)
+
+
+def fetch_remote_script(url: str | None = None) -> str:
+    cfg_url, _ = get_setting("update_url")
+    target_url = url or cfg_url
+    if target_url.startswith(("http://", "https://")) and "?" not in target_url:
+        target_url = f"{target_url}?t={int(time.time())}"
+    req = urllib.request.Request(
+        target_url,
+        headers={"User-Agent": f"run_block/{VERSION}", "Cache-Control": "no-cache", "Pragma": "no-cache"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = resp.read().decode("utf-8")
+    if REPO_MARKER and REPO_MARKER not in data:
+        raise ValueError("downloaded file does not contain expected repository marker")
+    ast.parse(data)
+    return data
+
+
+def cmd_check_update(url: str | None = None) -> int:
+    prog = prog_name()
+    try:
+        remote_src = fetch_remote_script(url)
+    except Exception as exc:
+        sys.stderr.write(f"{prog}: failed to check for updates: {exc}\n")
+        return 1
+    remote_ver = parse_version_from_source(remote_src) or "unknown"
+    if version_tuple(remote_ver) > version_tuple(VERSION):
+        sys.stdout.write(f"{prog}: update available: {VERSION} -> {remote_ver} (run '{prog} --update')\n")
+    else:
+        sys.stdout.write(f"{prog} {VERSION} is up to date (remote: {remote_ver}).\n")
+    return 0
+
+
+def cmd_update(force: bool = False, url: str | None = None, target_path: Path | None = None) -> int:
+    prog = prog_name()
+    dest = target_path or Path(__file__).resolve()
+    try:
+        remote_src = fetch_remote_script(url)
+    except Exception as exc:
+        sys.stderr.write(f"{prog}: update failed: {exc}\n")
+        return 1
+    remote_ver = parse_version_from_source(remote_src) or "unknown"
+    if not force and version_tuple(remote_ver) <= version_tuple(VERSION):
+        sys.stdout.write(f"{prog} {VERSION} is already up to date.\n")
+        return 0
+    try:
+        tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{dest.name}.", dir=str(dest.parent))
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                f.write(remote_src)
+            os.chmod(tmp_name, 0o755)
+            os.replace(tmp_name, dest)
+        except Exception:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+            raise
+    except Exception as exc:
+        sys.stderr.write(f"{prog}: could not write updated binary to {dest}: {exc}\n")
+        return 1
+    sys.stdout.write(f"{prog}: updated {VERSION} -> {remote_ver} ({dest})\n")
+    sys.stdout.write(f"Tip: run '{prog} --agents-install [FILE]' to automatically update your AGENTS.md.\n\n")
+    sys.stdout.write(
+        f"=== Updated AI Agent Instructions ({prog} v{remote_ver}) ===\n"
+        "Please verify that your AGENTS.md / CLAUDE.md matches the instructions below:\n\n"
+    )
+    sys.stdout.flush()
+    subprocess.run([str(dest), "--agents"], check=False)
+    return 0
+
+
+def cmd_normal(ref: str, payload: str) -> int:
+    session, step = parse_ref(ref, allow_fix_step=False)
+    step_num = int(step)
+    if step_num < 1:
+        raise SystemExit(f"{prog_name()}: step number must be >= 1")
+    sdir = ensure_base() / session
+    sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    label = f"{session}/{step}"
+    script_path = sdir / f"{step}.sh"
+    out_path = sdir / f"{step}.txt"
+
+    aborted_marker = script_path.with_suffix(".aborted")
+    overwrite = aborted_marker.exists()
+    if overwrite:
+        out_path.unlink(missing_ok=True)
+        aborted_marker.unlink(missing_ok=True)
+    elif script_path.exists() or out_path.exists():
+        if sys.stdout.isatty() and not no_clipboard():
+            try:
+                tty_w, tty_r = open_tty()
+                with tty_w, tty_r:
+                    tty_w.write(
+                        f"[{label}] Step already exists ({script_path}). Overwrite and run? [y/N]: "
+                    )
+                    tty_w.flush()
+                    ans = tty_r.readline().strip().lower()
+                    if ans in ("y", "yes"):
+                        overwrite = True
+                        out_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if not overwrite:
+            return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: step already exists — output: {out_path}")
+    if step_num > 1 and not (sdir / f"{step_num - 1}.sh").exists():
+        return not_run_exit(
+            label,
+            sdir,
+            step,
+            out_path,
+            f"[{label}] NOT RUN: previous step {session}/{step_num - 1} has not been run yet",
+        )
+    if not payload.strip():
+        return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: empty script on stdin")
+
+    write_private(script_path, payload, overwrite=overwrite)
+    return run_script(label, script_path, out_path, cleanup_on_abort=[script_path])
+
+
+def cmd_fix(ref: str, fix_code: str) -> int:
+    session, target = parse_ref(ref, allow_fix_step=True)
+    sdir = ensure_base() / session
+    src_script = sdir / f"{target}.sh"
+    new_step = next_fix_step(target)
+    label = f"{session}/{new_step}"
+    fix_path = sdir / f"{new_step}.fix"
+    script_path = sdir / f"{new_step}.sh"
+    out_path = sdir / f"{new_step}.txt"
+
+    if not src_script.exists():
+        return not_run_exit(
+            f"{session}/{target}",
+            sdir,
+            new_step,
+            out_path,
+            f"[{session}/{target}] NOT RUN: target script {src_script} does not exist",
+        )
+
+    if script_path.exists() or out_path.exists() or fix_path.exists():
+        return not_run_exit(label, sdir, new_step, out_path, f"[{label}] NOT RUN: fix step already exists — output: {out_path}")
+    if not fix_code.strip():
+        return not_run_exit(label, sdir, new_step, out_path, f"[{label}] NOT RUN: empty fix on stdin")
+
+    orig_text = src_script.read_text(encoding="utf-8")
+    ns: dict[str, object] = {"text": orig_text, "re": re}
+    try:
+        exec(compile(fix_code, str(fix_path), "exec"), ns)
+    except Exception as exc:
+        return not_run_exit(label, sdir, new_step, out_path, f"[{label}] NOT RUN: fix raised {type(exc).__name__}: {exc}")
+
+    new_text = ns.get("text")
+    if not isinstance(new_text, str):
+        return not_run_exit(label, sdir, new_step, out_path, f"[{label}] NOT RUN: fix did not leave a string in 'text'")
+    if new_text == orig_text:
+        return not_run_exit(label, sdir, new_step, out_path, f"[{label}] NOT RUN: fix made no changes to {src_script}")
+
+    write_private(fix_path, fix_code)
+    write_private(script_path, new_text)
+    diff = "".join(
+        difflib.unified_diff(
+            orig_text.splitlines(keepends=True),
+            new_text.splitlines(keepends=True),
+            fromfile=f"{target}.sh",
+            tofile=f"{new_step}.sh",
+        )
+    )
+    header = [f"[{label}] patched {target}.sh -> {new_step}.sh:\n", diff]
+    return run_script(label, script_path, out_path, header_lines=header, cleanup_on_abort=[fix_path, script_path])
+
+
+def _step_sort_key(stem: str) -> tuple[int, int]:
+    if "_" in stem:
+        b, s = stem.split("_", 1)
+        return (int(b) if b.isdigit() else 0, int(s) if s.isdigit() else 0)
+    return (int(stem) if stem.isdigit() else 0, 0)
+
+
+def _step_status(sdir: Path, stem: str) -> str:
+    if (sdir / f"{stem}.aborted").exists():
+        return "ABORTED"
+    out_p = sdir / f"{stem}.txt"
+    if out_p.is_file():
+        txt = out_p.read_text(encoding="utf-8", errors="replace")
+        label = f"{sdir.name}/{stem}"
+        matches = re.findall(rf"^\[{re.escape(label)}\]\s+(END|SUCCESS|FAILED|NOT RUN)([^\n]*)", txt, flags=re.MULTILINE)
+        if matches:
+            kind, rest = matches[-1]
+            return (kind + rest.split("—")[0]).strip()
+        return "DONE"
+    return "SAVED"
+
+
+def _find_latest_step(session: str | None = None) -> tuple[str, str]:
+    base = ensure_base()
+    if session:
+        sdirs = [base / session] if (base / session).is_dir() else []
+    else:
+        sdirs = sorted(
+            [p for p in base.iterdir() if p.is_dir()],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    for sdir in sdirs:
+        scripts = sorted([p.stem for p in sdir.glob("*.sh")], key=_step_sort_key)
+        if scripts:
+            return sdir.name, scripts[-1]
+    raise SystemExit(f"{prog_name()}: no saved blocks found in {base}")
+
+
+def cmd_list(session: str | None = None) -> int:
+    base = ensure_base()
+    if not session:
+        sdirs = sorted([p for p in base.iterdir() if p.is_dir()], key=lambda p: p.stat().st_mtime)
+        if not sdirs:
+            sys.stdout.write(f"No sessions in {base}\n")
+            return 0
+        sys.stdout.write(f"Sessions in {base}:\n")
+        for sdir in sdirs:
+            scripts = sorted([p.stem for p in sdir.glob("*.sh")], key=_step_sort_key)
+            last = f"{sdir.name}/{scripts[-1]} ({_step_status(sdir, scripts[-1])})" if scripts else "empty"
+            sys.stdout.write(f"  {sdir.name:<8}  {len(scripts):>3} block(s)   last: {last}\n")
+        session = sdirs[-1].name
+        sys.stdout.write(f"\nRecent blocks in {session}:\n")
+    else:
+        sdir = base / session
+        if not sdir.is_dir():
+            raise SystemExit(f"{prog_name()}: session {session!r} not found in {base}")
+        sys.stdout.write(f"Blocks in {session}:\n")
+    sdir = base / session
+    scripts = sorted([p.stem for p in sdir.glob("*.sh")], key=_step_sort_key)
+    for stem in scripts[-15:]:
+        st = _step_status(sdir, stem)
+        sh_text = (sdir / f"{stem}.sh").read_text(encoding="utf-8", errors="replace")
+        summary = summarize_script_actions(sh_text)
+        rows = summary.get("rows") or []
+        desc = "; ".join(f"{k}: {v}" for k, v in rows[:2]) if rows else ""
+        if len(desc) > 56:
+            desc = desc[:53] + "..."
+        ref = f"{session}/{stem}"
+        sys.stdout.write(f"  {ref:<10}  {st:<24}  {desc}\n")
+    return 0
+
+
+def cmd_show(ref: str | None = None) -> int:
+    if ref:
+        session, step = parse_ref(ref, allow_fix_step=True)
+    else:
+        session, step = _find_latest_step()
+    sdir = ensure_base() / session
+    script_path = sdir / f"{step}.sh"
+    out_path = sdir / f"{step}.txt"
+    if not script_path.is_file():
+        raise SystemExit(f"{prog_name()}: block {session}/{step} not found ({script_path})")
+    sys.stdout.write(f"=== [{session}/{step}] Script: {script_path} ({_step_status(sdir, step)}) ===\n")
+    sys.stdout.write(script_path.read_text(encoding="utf-8", errors="replace"))
+    if out_path.is_file():
+        sys.stdout.write(f"\n=== [{session}/{step}] Output: {out_path} ===\n")
+        sys.stdout.write(out_path.read_text(encoding="utf-8", errors="replace"))
+    return 0
+
+
+def cmd_retry(ref: str | None = None) -> int:
+    if ref:
+        session, step = parse_ref(ref, allow_fix_step=True)
+    else:
+        session, step = _find_latest_step()
+    sdir = ensure_base() / session
+    script_path = sdir / f"{step}.sh"
+    out_path = sdir / f"{step}.txt"
+    if not script_path.is_file():
+        raise SystemExit(f"{prog_name()}: block {session}/{step} not found ({script_path})")
+    out_path.unlink(missing_ok=True)
+    (sdir / f"{step}.aborted").unlink(missing_ok=True)
+    return run_script(f"{session}/{step}", script_path, out_path, cleanup_on_abort=[])
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    prog = prog_name()
+    if "-h" in args or "--help" in args:
+        sys.stdout.write(usage_text())
+        return 0
+    if "-V" in args or "--version" in args:
+        sys.stdout.write(f"{prog} {VERSION}\n")
+        return 0
+    if "--config" in args:
+        return cmd_show_config()
+    if "--init-config" in args:
+        force = "--force" in args
+        return cmd_init_config(force=force)
+    if "--agents-install" in args or "--agent-install" in args:
+        rest = [a for a in args if a not in ("--agents-install", "--agent-install")]
+        if len(rest) > 1:
+            raise SystemExit(f"{prog}: usage: {prog} --agents-install [FILE]")
+        return cmd_agent_install(rest[0] if rest else None, prog=prog)
+    if "--agents" in args or "--agents-md" in args:
+        sys.stdout.write(agents_markdown(prog) + "\n")
+        return 0
+    if not args:
+        sys.stderr.write(usage_text())
+        return 2
+
+    if args[0] in ("--list", "-l"):
+        if len(args) > 2:
+            raise SystemExit(f"{prog}: usage: {prog} --list [session]")
+        return cmd_list(args[1] if len(args) == 2 else None)
+
+    if args[0] == "--show":
+        if len(args) > 2:
+            raise SystemExit(f"{prog}: usage: {prog} --show [session/step]")
+        return cmd_show(args[1] if len(args) == 2 else None)
+
+    if args[0] in ("--retry", "--rerun"):
+        if len(args) > 2:
+            raise SystemExit(f"{prog}: usage: {prog} --retry [session/step]")
+        return cmd_retry(args[1] if len(args) == 2 else None)
+
+    if args[0] == "--check-update":
+        if len(args) != 1:
+            raise SystemExit(f"{prog}: usage: {prog} --check-update")
+        return cmd_check_update()
+
+    if args[0] in ("--update", "--self-update"):
+        force = "--force" in args[1:]
+        rest = [a for a in args[1:] if a != "--force"]
+        if rest:
+            raise SystemExit(f"{prog}: usage: {prog} --update [--force]")
+        return cmd_update(force=force)
+
+    if args[0] == "--start":
+        force = "--force" in args
+        rest = [a for a in args[1:] if a != "--force"]
+        if len(rest) > 1:
+            raise SystemExit(f"{prog}: usage: {prog} --start [--force] [session]")
+        sdir = start_session(rest[0] if rest else None, force=force)
+        sys.stdout.write(f"{sdir.name}\n")
+        return 0
+
+    if args[0] == "--fix":
+        if len(args) != 2:
+            raise SystemExit(f"{prog}: usage: {prog} --fix <session>/<target>")
+        return cmd_fix(args[1], sys.stdin.read())
+
+    if len(args) != 1 or args[0].startswith("-"):
+        raise SystemExit(
+            f"{prog}: usage: {prog} <session>/<step> (or --fix / --retry / --list / --show / --start / --agents-install / --config / --agents / --update / --version / --help)"
+        )
+    return cmd_normal(args[0], sys.stdin.read())
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

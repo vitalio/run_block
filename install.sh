@@ -1,0 +1,145 @@
+#!/usr/bin/env sh
+# Usage: install.sh [-h|--help] [--name CMD] [--dir DIR] [--yes]
+#
+# Installs or updates run_block (https://github.com/vitalio/run_block).
+# Checks for command name conflicts in PATH, offers an alternative name if
+# 'run_block' is already taken by another program, installs into ~/.local/bin
+# (or --dir), and prints the AI agent instructions at the end.
+# -h / --help prints this usage and exits 0 doing nothing.
+set -eu
+
+REPO_MARKER="run_block-repo: vitalio/run_block"
+RAW_URL="${RUN_BLOCK_UPDATE_URL:-https://raw.githubusercontent.com/vitalio/run_block/main/run_block}"
+CMD_NAME="${RUN_BLOCK_NAME:-}"
+INSTALL_DIR="${RUN_BLOCK_INSTALL_DIR:-}"
+ASSUME_YES=0
+
+usage() {
+    sed -n '2,8s/^# \?//p' "$0"
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --name)
+            if [ "$#" -lt 2 ]; then
+                echo "install.sh: --name requires an argument" >&2
+                exit 2
+            fi
+            CMD_NAME="$2"
+            shift 2
+            ;;
+        --dir)
+            if [ "$#" -lt 2 ]; then
+                echo "install.sh: --dir requires an argument" >&2
+                exit 2
+            fi
+            INSTALL_DIR="$2"
+            shift 2
+            ;;
+        -y|--yes)
+            ASSUME_YES=1
+            shift
+            ;;
+        *)
+            echo "install.sh: unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "Error: python3 is required but was not found in PATH." >&2
+    exit 1
+fi
+if ! command -v bash >/dev/null 2>&1; then
+    echo "Error: bash is required but was not found in PATH." >&2
+    exit 1
+fi
+
+is_our_binary() {
+    [ -f "$1" ] && grep -q "$REPO_MARKER" "$1" 2>/dev/null
+}
+
+if [ -z "$CMD_NAME" ]; then
+    CMD_NAME="run_block"
+    EXISTING="$(command -v "$CMD_NAME" 2>/dev/null || true)"
+    if [ -n "$EXISTING" ] && ! is_our_binary "$EXISTING"; then
+        echo "Notice: '$CMD_NAME' already exists at $EXISTING (another program)." >&2
+        ALT_NAME="run_term_block"
+        if [ "$ASSUME_YES" -eq 0 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+            printf "Enter an alternative command name [%s]: " "$ALT_NAME" >/dev/tty
+            IFS= read -r USER_NAME </dev/tty || USER_NAME=""
+            if [ -n "$USER_NAME" ]; then
+                CMD_NAME="$USER_NAME"
+            else
+                CMD_NAME="$ALT_NAME"
+            fi
+        else
+            CMD_NAME="$ALT_NAME"
+            echo "Using alternative command name: $CMD_NAME" >&2
+        fi
+    fi
+fi
+
+if [ -z "$INSTALL_DIR" ]; then
+    EXISTING_OUR="$(command -v "$CMD_NAME" 2>/dev/null || true)"
+    if [ -n "$EXISTING_OUR" ] && is_our_binary "$EXISTING_OUR"; then
+        INSTALL_DIR="$(dirname "$EXISTING_OUR")"
+    else
+        INSTALL_DIR="$HOME/.local/bin"
+    fi
+fi
+
+mkdir -p "$INSTALL_DIR"
+TARGET="$INSTALL_DIR/$CMD_NAME"
+
+TMP_FILE="$(mktemp "${TMPDIR:-/tmp}/run_block_install.XXXXXX")"
+cleanup() {
+    rm -f "$TMP_FILE"
+}
+trap cleanup EXIT INT TERM
+
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || pwd)"
+if [ -z "${RUN_BLOCK_UPDATE_URL:-}" ] && [ -f "$SCRIPT_DIR/run_block" ] && is_our_binary "$SCRIPT_DIR/run_block"; then
+    cp "$SCRIPT_DIR/run_block" "$TMP_FILE"
+else
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$RAW_URL" -o "$TMP_FILE"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$TMP_FILE" "$RAW_URL"
+    else
+        python3 -c 'import sys, urllib.request; data = urllib.request.urlopen(sys.argv[1], timeout=15).read(); open(sys.argv[2], "wb").write(data)' "$RAW_URL" "$TMP_FILE"
+    fi
+fi
+
+if ! is_our_binary "$TMP_FILE"; then
+    echo "Error: downloaded file is not a valid vitalio/run_block script." >&2
+    exit 1
+fi
+
+chmod 0755 "$TMP_FILE"
+mv "$TMP_FILE" "$TARGET"
+
+VER="$("$TARGET" --version 2>/dev/null || echo "$CMD_NAME")"
+echo "============================================================"
+echo "Installed: $VER -> $TARGET"
+case ":${PATH:-}:" in
+    *":$INSTALL_DIR:"*) ;;
+    *)
+        echo ""
+        echo "Note: $INSTALL_DIR is not in your PATH."
+        echo "Add this line to your ~/.bashrc or ~/.zshrc:"
+        echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
+        ;;
+esac
+echo "Tip: run '$CMD_NAME --agents-install' in any repo to add/update AGENTS.md automatically."
+echo "============================================================"
+echo ""
+echo "Below are the Markdown instructions for your AI model (for AGENTS.md / CLAUDE.md):"
+echo ""
+"$TARGET" --agents
