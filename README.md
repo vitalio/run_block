@@ -31,9 +31,10 @@ Create `.run_block.start` in your project root (or run `run_block --init-start`)
 Plain lines are UTF-8 file paths; lines starting with `$ ` are shell commands:
 
 ```text
+$ run_block --agents
+
 AGENTS.md
 
-$ run_block --agents
 $ todo_md --agents
 $ todo_md
 $ git status -sb

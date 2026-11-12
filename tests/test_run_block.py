@@ -128,7 +128,8 @@ class TestRunBlock(unittest.TestCase):
         r_md = subprocess.run([str(SCRIPT), "--agents"], capture_output=True, text=True, check=False)
         self.assertEqual(r_md.returncode, 0)
         self.assertIn(f"## Terminal blocks (`run_block` v{self.mod.VERSION})", r_md.stdout)
-        self.assertIn("CRITICAL — ONE BLOCK PER MESSAGE:", r_md.stdout)
+        self.assertIn("CRITICAL — STRICT BLOCK GENERATION & LAYOUT RULES", r_md.stdout)
+        self.assertIn("ONE BLOCK PER MESSAGE", r_md.stdout)
         self.assertIn("run_block <<'RUN_BLOCK'", r_md.stdout)
         self.assertIn("run_block s1/2 <<'RUN_BLOCK'", r_md.stdout)
         self.assertNotIn("/tmp/", r_md.stdout)
@@ -289,7 +290,11 @@ class TestRunBlock(unittest.TestCase):
         self.assertEqual(r_start.returncode, 0, r_start.stderr)
         self.assertIn("Session: s2", r_start.stdout)
         self.assertIn("Next block: s2/1", r_start.stdout)
+        self.assertIn("Included sections:", r_start.stdout)
         bundle = (self.tmp / "sessions/s2/0.txt").read_text(encoding="utf-8")
+        self.assertIn("Session: s2\nNext block: s2/1\nWorkdir:", bundle)
+        self.assertNotIn("Included sections:", bundle)
+        self.assertNotIn("Spec:", bundle)
         self.assertIn("===== File: AGENTS.md =====", bundle)
         self.assertIn("# My Project Rules", bundle)
         self.assertIn("===== $ run_block --agents =====", bundle)
@@ -323,6 +328,39 @@ class TestRunBlock(unittest.TestCase):
         )
         self.assertEqual(r_show0.returncode, 0)
         self.assertIn("Bundle:", r_show0.stdout)
+
+    def test_subdir_start_spec_sets_workdir_for_start_and_blocks(self):
+        outer = self.tmp / "outer_repo"
+        sub = outer / "my_subproject"
+        sub.mkdir(parents=True)
+        (sub / "AGENTS.md").write_text("# Subproject rules\n", encoding="utf-8")
+        (sub / ".run_block.start").write_text("$ run_block --agents\nAGENTS.md\n$ pwd\n", encoding="utf-8")
+        env = {**os.environ, "RUN_BLOCK_DIR": str(self.tmp / "sub_sessions"), "RUN_BLOCK_CWD": str(outer)}
+        r_start = subprocess.run(
+            [str(SCRIPT), "--start"],
+            capture_output=True,
+            text=True,
+            cwd=str(outer),
+            env=env,
+            check=False,
+        )
+        self.assertEqual(r_start.returncode, 0, r_start.stderr)
+        self.assertIn(f"Workdir: {sub.resolve()}", r_start.stdout)
+        bundle = (self.tmp / "sub_sessions/s1/0.txt").read_text(encoding="utf-8")
+        self.assertIn("# Subproject rules", bundle)
+        self.assertIn(f"Workdir: {sub.resolve()}", bundle)
+
+        r_blk = subprocess.run(
+            [str(SCRIPT), "s1/1"],
+            input="pwd\n",
+            capture_output=True,
+            text=True,
+            cwd=str(outer),
+            env={**env, "RUN_BLOCK_CWD": "auto"},
+            check=False,
+        )
+        self.assertEqual(r_blk.returncode, 0, r_blk.stderr)
+        self.assertIn(str(sub.resolve()), r_blk.stdout)
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,14 +8,12 @@ Task heading format: `### <emoji> [<STATUS>] <ID>: <title>`
 
 ## Resume
 
-Written 2026-11-12. Released `run_block` `v0.6.0`:
-- Automatic first-block session initialization (`run_block <<'RUN_BLOCK'` without `<session>/<step>` initializes a new session or reuses a `--start` session and runs step `1`, reserving step `0` for the start bundle).
-- Declarative session context bundler (`run_block --start [options] [FILE ...]` and `run_block --init-start`) powered by [.run_block.start](.run_block.start) (combines UTF-8 project files and `$ <command>` outputs into `/tmp/run_block/<session>/0.txt` with token counts and clipboard prompt).
-- Updated `run_block --agents` instructions and removed `--agents-install` so `AGENTS.md` stays clean and project-specific.
-- Pre-execution `BLOCK PLAN` + 6-category `Safety warnings` scanner with `tcflush` input protection.
-- Single-keystroke `Enter` (copy) / `Esc` (skip) clipboard prompt with byte size and Claude/GPT/Gemini token counts.
-- Session and block navigation (`--list` / `-l`, `--show`, `--retry` / `--rerun`, `--start`).
-- Configuration file support (`~/.config/run_block/config`, `--config`, `--init-config`) and self-update (`--update`, `--check-update`).
+Written 2026-11-13. Updated `run_block` `v0.6.0`:
+- Strengthened `run_block --agents` with explicit `CRITICAL — STRICT BLOCK GENERATION & LAYOUT RULES` (strict single-block-per-message rule, end-of-message placement with zero trailing text, column-0 fence/heredoc layout, and no inner triple backticks).
+- Placed `$ run_block --agents` first in `.run_block.start`, `default_start_template()`, and `README.md`.
+- Made `<session>/0.txt` bundle header minimal (`Session`, `Next block`, `Workdir`) while keeping the detailed section/token manifest in console output during `run_block --start`.
+- Unified `Workdir` resolution so that when `.run_block.start` is located in a subdirectory, its directory is used as `Workdir` both for `--start` and for subsequent block executions in the session.
+- Next in queue: `F1` (PowerShell execution mode on Windows), `F2` (custom safety rules in config), `F3` (`--clean` session pruning).
 
 To start a new chat session: run `run_block --start`.
 

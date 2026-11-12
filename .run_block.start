@@ -2,9 +2,10 @@
 # Plain lines are file paths (read directly as UTF-8 relative to the project root).
 # Lines starting with '$ ' (or '! ') are shell commands executed in the project directory.
 
+$ run_block --agents
+
 AGENTS.md
 
-$ run_block --agents
 $ todo_md --agents
 $ todo_md
 $ git status -sb

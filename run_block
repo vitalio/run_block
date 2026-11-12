@@ -247,17 +247,21 @@ def agents_markdown(prog: str | None = None) -> str:
     lines = [
         f"## Terminal blocks (`{cmd}` v{VERSION})",
         "",
-        "You have no direct shell access. Run commands by giving the user a",
-        f"`{cmd}` terminal block.",
+        f"You have no direct shell access. Run commands by giving the user a `{cmd}` terminal block.",
         "",
-        "**CRITICAL — ONE BLOCK PER MESSAGE:**",
-        f"- Give **at most ONE** executable `{cmd}` block per message.",
-        "- Place it at the **very end** of your reply with **zero trailing text** after the closing fence.",
-        "- Never assume a block ran until the user pastes its output.",
+        "### CRITICAL — STRICT BLOCK GENERATION & LAYOUT RULES",
+        "",
+        f"1. **ONE BLOCK PER MESSAGE (NEVER TWO OR MORE):** Output **at most ONE** `{cmd}` block per reply. Never output multiple `{cmd}` blocks in the same message (not even as \"step 1 / step 2\", alternatives, or illustrative examples). Stop generating immediately after the block and wait for the user to paste its output.",
+        f"2. **MUST BE AT THE VERY END OF YOUR REPLY:** The closing `{f3}` fence of the `{cmd}` block must be the **final line of your message** — **zero trailing text, explanations, or characters** after the closing `{f3}`.",
+        "3. **EXACT MARKDOWN FENCE & HEREDOC FORMAT:**",
+        f"   - Always put an **empty line** immediately before the opening `{f3}bash` fence.",
+        f"   - Start `{f3}bash`, `{cmd} ... <<'RUN_BLOCK'`, `RUN_BLOCK`, and the closing `{f3}` at **column 0** (no leading spaces, no list/blockquote indentation).",
+        f"   - **Never** put literal triple backticks (`{f3}`) or the heredoc delimiter (`RUN_BLOCK` / `RUN_FIX`) inside the script body — this breaks Markdown parsing and heredoc termination (in Python, construct backticks dynamically as `F3 = chr(96) * 3`).",
+        "4. **SEQUENTIAL STEP NUMBERS:** Every launched block consumes its step number, even if it fails. Never reuse a step number or skip ahead.",
         "",
         "### 1. First block in a new session (no `<session>/<step>`)",
         "",
-        "When starting a chat where the session ID is not yet known, omit `<session>/<step>` on the **first** block:",
+        "Only when starting a chat where `<session>` is not yet known, omit `<session>/<step>` on the **first** block:",
         "",
         f"{f3}bash",
         f"{cmd} <<'RUN_BLOCK'",
@@ -265,12 +269,12 @@ def agents_markdown(prog: str | None = None) -> str:
         "RUN_BLOCK",
         f"{f3}",
         "",
-        f"- `{cmd}` automatically initializes a new session (or uses the session prepared by `{cmd} --start`) and runs step `1` (`<session>/1`), returning `[<session>/1]` in the output header.",
+        f"- `{cmd}` initializes a new session (or reuses the session prepared by `{cmd} --start`) and runs `<session>/1`, returning `[<session>/1]` in the output header.",
         "- Do **not** guess `s1/1` when the session ID is unknown (`s1` may already exist).",
         "",
         "### 2. Subsequent normal blocks (`<session>/<step>`)",
         "",
-        "Once you know `<session>` (from the `[<session>/1]` output header or from `Session: <session>` / `Next block: <session>/1` in a session start bundle), pass `<session>/<step>` explicitly with the next sequential step number (`1`, `2`, `3`, ...):",
+        "Once `<session>` is known (from `Session: <session>` / `Next block: <session>/1` in the start bundle or from `[<session>/1]`), always pass `<session>/<step>` with the next sequential step number (`1`, `2`, `3`, ...):",
         "",
         f"{f3}bash",
         f"{cmd} s1/2 <<'RUN_BLOCK'",
@@ -278,10 +282,8 @@ def agents_markdown(prog: str | None = None) -> str:
         "RUN_BLOCK",
         f"{f3}",
         "",
-        "- Runs in `bash` from the repository root (or current working directory).",
+        "- Runs in `bash` inside the session `Workdir` (the directory containing `.run_block.start`, or the Git repository root).",
         "- Step `0` (`0.txt`) is reserved for the session start context bundle; executable blocks always start at `1`.",
-        "- Every launched step consumes its number, even if it fails. Never reuse a step number or skip ahead.",
-        "- **Markdown fence safety:** Keep a blank line before the opening fence. Never put literal triple backticks or the heredoc delimiter (`RUN_BLOCK` / `RUN_FIX`) inside a block body (in Python, build backticks as `F3 = chr(96) * 3`).",
         "",
         "### 3. Fixing a failed block (`--fix <session>/<target>`)",
         "",
@@ -302,12 +304,7 @@ def agents_markdown(prog: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def get_work_dir() -> Path:
-    val, _ = get_setting("work_dir")
-    if val.lower() == "cwd":
-        return Path.cwd()
-    if val.lower() != "auto":
-        return Path(val).expanduser()
+def _git_toplevel_or_cwd() -> Path:
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
@@ -320,10 +317,49 @@ def get_work_dir() -> Path:
         if r.returncode == 0 and r.stdout.strip():
             top = Path(r.stdout.strip())
             if top.is_dir():
-                return top
+                return top.resolve()
     except Exception:
         pass
-    return Path.cwd()
+    return Path.cwd().resolve()
+
+
+def _session_bundle_workdir(session_dir: Path | None) -> Path | None:
+    if session_dir is None:
+        return None
+    bundle_file = session_dir / "0.txt"
+    if not bundle_file.is_file():
+        return None
+    try:
+        with bundle_file.open(encoding="utf-8", errors="replace") as f:
+            for _ in range(10):
+                line = f.readline()
+                if not line or line.startswith("====="):
+                    break
+                if line.startswith("Workdir:"):
+                    raw = line.split(":", 1)[1].strip()
+                    if raw:
+                        p = Path(raw)
+                        if p.is_dir():
+                            return p.resolve()
+    except OSError:
+        pass
+    return None
+
+
+def get_work_dir(session_dir: Path | None = None) -> Path:
+    val, _ = get_setting("work_dir")
+    if val.lower() == "cwd":
+        return Path.cwd()
+    if val.lower() != "auto":
+        return Path(val).expanduser()
+    base_root = _git_toplevel_or_cwd()
+    start_file, spec_dir = find_start_file(base_root)
+    if start_file is not None:
+        return spec_dir
+    sess_wdir = _session_bundle_workdir(session_dir)
+    if sess_wdir is not None and (sess_wdir == base_root or base_root in sess_wdir.parents):
+        return sess_wdir
+    return base_root
 
 
 def clipboard_mode() -> str:
@@ -469,7 +505,8 @@ def _analyze_python_ast(
                     _add_unique(writes, target or "open(..., 'w')")
 
 
-def summarize_script_actions(script_text: str) -> dict[str, object]:
+def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> dict[str, object]:
+    wdir = work_dir if work_dir is not None else get_work_dir()
     lines = script_text.splitlines()
     non_empty = [l for l in lines if l.strip()]
     writes: list[str] = []
@@ -528,8 +565,8 @@ def summarize_script_actions(script_text: str) -> dict[str, object]:
         if m_cd:
             raw_target = m_cd.group(1).strip().strip('"').strip("'")
             try:
-                resolved_cd = (get_work_dir() / os.path.expanduser(raw_target)).resolve()
-                if resolved_cd != get_work_dir().resolve():
+                resolved_cd = (wdir / os.path.expanduser(raw_target)).resolve()
+                if resolved_cd != wdir.resolve():
                     _add_unique(cd_dirs, m_cd.group(1).strip())
             except Exception:
                 _add_unique(cd_dirs, m_cd.group(1).strip())
@@ -568,7 +605,7 @@ def summarize_script_actions(script_text: str) -> dict[str, object]:
         "rows": rows,
         "operations": operations,
         "cd_dirs": cd_dirs,
-        "work_dir": str(get_work_dir()),
+        "work_dir": str(wdir),
     }
 
 
@@ -1030,7 +1067,7 @@ def run_script(
     header_lines: list[str] | None = None,
     cleanup_on_abort: list[Path] | None = None,
 ) -> int:
-    work_dir = get_work_dir()
+    work_dir = get_work_dir(script_path.parent)
     shell_bin, _ = get_setting("shell")
     script_text = script_path.read_text(encoding="utf-8")
 
@@ -1054,7 +1091,7 @@ def run_script(
         return chk.returncode
 
     aborted_marker = script_path.with_suffix(".aborted")
-    summary_obj = summarize_script_actions(script_text)
+    summary_obj = summarize_script_actions(script_text, work_dir=work_dir)
     if not confirm_execution(label, script_text, summary=summary_obj, script_path=script_path):
         write_private(aborted_marker, "aborted\n", overwrite=True)
         return not_run_exit(label, script_path.parent, script_path.stem, out_path, f"[{label}] NOT RUN: aborted by user (re-run with: {prog_name()} --retry {label})", rc=130)
@@ -1516,10 +1553,11 @@ def default_start_template(prog: str | None = None) -> str:
         "# Plain lines are file paths (read directly as UTF-8 relative to the project root).",
         "# Lines starting with '$ ' (or '! ') are shell commands executed in the project directory.",
         "",
+        f"$ {cmd} --agents",
+        "",
         "AGENTS.md",
         "TODO.md",
         "",
-        f"$ {cmd} --agents",
         "$ git status -sb",
         "$ git branch -vv",
         "$ git log --oneline -10",
@@ -1542,14 +1580,26 @@ def cmd_init_start(force: bool = False, target_dir: Path | None = None) -> int:
 
 def find_start_file(work_dir: Path) -> tuple[Path | None, Path]:
     cwd = Path.cwd().resolve()
-    cwd_candidate = cwd / START_FILE_NAME
-    if cwd_candidate.is_file():
-        return cwd_candidate, cwd
     wdir = work_dir.resolve()
+    # Walk from cwd up to work_dir (if cwd is inside work_dir)
+    cur = cwd
+    while True:
+        candidate = cur / START_FILE_NAME
+        if candidate.is_file():
+            return candidate, cur
+        if cur == wdir or cur.parent == cur:
+            break
+        if wdir not in cur.parents:
+            break
+        cur = cur.parent
     wdir_candidate = wdir / START_FILE_NAME
     if wdir_candidate.is_file():
         return wdir_candidate, wdir
+    seen_bases: list[Path] = []
     for base in (cwd, wdir):
+        if base in seen_bases:
+            continue
+        seen_bases.append(base)
         try:
             sub_matches = sorted(
                 p / START_FILE_NAME
@@ -1621,11 +1671,10 @@ def build_start_bundle(
         spec_source = str(start_file)
     else:
         spec_source = "built-in defaults"
-        entries = []
+        entries = [("cmd", f"{prog} --agents")]
         for default_f in ("AGENTS.md", "TODO.md"):
             if (spec_dir / default_f).is_file():
                 entries.append(("file", default_f))
-        entries.append(("cmd", f"{prog} --agents"))
         if (spec_dir / ".git").exists():
             entries.append(("cmd", "git status -sb"))
 
@@ -1677,7 +1726,7 @@ def build_start_bundle(
         manifest_lines.append(f"  - {title}: {n_lines} lines (~{approx_tok} tokens)")
         body_blocks.append(f"===== {title} =====\n{content}\n")
 
-    header_lines = [
+    console_header_lines = [
         f"# {prog} session context bundle",
         f"Session: {session_name}",
         f"Next block: {session_name}/1",
@@ -1688,12 +1737,22 @@ def build_start_bundle(
         *manifest_lines,
     ]
     if warnings:
-        header_lines.append("Warnings:")
-        header_lines.extend(f"  - {w}" for w in warnings)
+        console_header_lines.append("Warnings:")
+        console_header_lines.extend(f"  - {w}" for w in warnings)
 
-    header_text = "\n".join(header_lines) + "\n"
+    bundle_header_lines = [
+        f"Session: {session_name}",
+        f"Next block: {session_name}/1",
+        f"Workdir: {spec_dir}",
+    ]
+    if warnings:
+        bundle_header_lines.append("Warnings:")
+        bundle_header_lines.extend(f"  - {w}" for w in warnings)
+
+    header_text = "\n".join(console_header_lines) + "\n"
+    bundle_header_text = "\n".join(bundle_header_lines) + "\n"
     body_text = "\n".join(body_blocks)
-    full_text = header_text + "\n" + body_text
+    full_text = bundle_header_text + "\n" + body_text
     total_lines = len(full_text.splitlines())
     total_tokens = count_tokens(full_text.encode("utf-8"))["gpt"]
     return {
