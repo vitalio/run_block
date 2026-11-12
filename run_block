@@ -562,7 +562,13 @@ def summarize_script_actions(script_text: str) -> dict[str, object]:
             continue
         m_cd = re.match(r"^cd\s+(.+)$", s)
         if m_cd:
-            _add_unique(cd_dirs, m_cd.group(1).strip())
+            raw_target = m_cd.group(1).strip().strip('"').strip("'")
+            try:
+                resolved_cd = (get_work_dir() / os.path.expanduser(raw_target)).resolve()
+                if resolved_cd != get_work_dir().resolve():
+                    _add_unique(cd_dirs, m_cd.group(1).strip())
+            except Exception:
+                _add_unique(cd_dirs, m_cd.group(1).strip())
             continue
         if re.match(r"^git\s+", s):
             _add_unique(git_cmds, s)
