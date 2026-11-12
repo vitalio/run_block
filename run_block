@@ -780,6 +780,9 @@ def format_safety_box(
     return box, inner_width, cursor_col_offset
 
 
+GUI_EDITORS = {"gvim", "mvim", "code", "code-insiders", "subl", "gedit", "kate", "mousepad", "xed"}
+
+
 def resolve_editor_command() -> list[str]:
     cfg_ed, _ = get_setting("editor")
     if cfg_ed and cfg_ed.lower() != "auto":
@@ -787,8 +790,10 @@ def resolve_editor_command() -> list[str]:
     for env_k in ("VISUAL", "EDITOR"):
         val = os.environ.get(env_k, "").strip()
         if val:
-            return shlex.split(val)
-    for candidate in ("nano", "less", "vi", "more"):
+            parts = shlex.split(val)
+            if parts and Path(parts[0]).name.lower() not in GUI_EDITORS:
+                return parts
+    for candidate in ("nano", "vim", "less", "vi", "more"):
         if shutil.which(candidate):
             return [candidate]
     return ["vi"]
@@ -801,6 +806,53 @@ def open_script_in_editor(script_path: Path, tty_r, tty_w) -> None:
     except Exception as exc:
         tty_w.write(f"\n[editor error: {exc}]\n")
         tty_w.flush()
+
+
+def read_confirm_key(tty_r, default_yes: bool) -> str:
+    """Reads a single key: returns 'yes', 'no', or 'view'."""
+    flush_tty_input(tty_r)
+    if not HAS_PTY or termios is None or tty is None:
+        ans = tty_r.readline().strip().lower()
+        if ans in ("v", "view", "e", "edit"):
+            return "view"
+        if default_yes and ans in ("", "y", "yes"):
+            return "yes"
+        if not default_yes and ans in ("y", "yes"):
+            return "yes"
+        if ans in ("n", "no", "q", "esc"):
+            return "no"
+        return "invalid"
+    fd = tty_r.fileno()
+    try:
+        old_attrs = termios.tcgetattr(fd)
+    except Exception:
+        ans = tty_r.readline().strip().lower()
+        return "view" if ans in ("v", "view", "e", "edit") else ("yes" if ans in ("y", "yes") else "no")
+    try:
+        tty.setraw(fd, termios.TCSANOW)
+        while True:
+            ch = os.read(fd, 1)
+            if not ch:
+                return "no"
+            if ch in (b"v", b"V", b"e", b"E"):
+                return "view"
+            if ch in (b"y", b"Y"):
+                return "yes"
+            if default_yes and ch in (b"\r", b"\n"):
+                return "yes"
+            if ch in (b"n", b"N", b"q", b"Q", b"\x03", b"\x04"):
+                return "no"
+            if ch == b"\x1b":
+                rlist, _, _ = select.select([fd], [], [], 0.05)
+                if rlist:
+                    os.read(fd, 32)
+                    continue
+                return "no"
+    finally:
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+        except Exception:
+            pass
 
 
 def confirm_execution(
@@ -826,39 +878,25 @@ def confirm_execution(
     try:
         tty_w, tty_r = open_tty()
         with tty_w, tty_r:
-            flush_tty_input(tty_r)
             tty_w.write(f"\n{box}\r\033[1A\033[{cursor_offset}C")
             tty_w.flush()
             while True:
-                ans = tty_r.readline().strip().lower()
-                if ans in ("v", "view", "e", "edit"):
+                action = read_confirm_key(tty_r, default_yes=default_yes)
+                if action == "view":
                     if script_path is not None and script_path.is_file():
-                        tty_w.write("\n")
-                        tty_w.flush()
                         open_script_in_editor(script_path, tty_r, tty_w)
-                        flush_tty_input(tty_r)
                         p_offset = 2 + display_width(prompt_line)
                         tty_w.write(f"\r{pad_box_line(prompt_line, inner_width)}\n{bottom}\r\033[1A\033[{p_offset}C")
                         tty_w.flush()
-                        continue
-                if default_yes and ans in ("", "y", "yes"):
+                    continue
+                if action == "yes":
                     approved = True
                     break
-                if default_yes and ans in ("n", "no"):
+                if action == "no":
                     approved = False
                     break
-                if not default_yes and ans in ("y", "yes"):
-                    approved = True
-                    break
-                if not default_yes and ans in ("n", "no"):
-                    approved = False
-                    break
-                reprompt = f"-> Please type 'y' to execute, 'n' to abort, or 'v' to view {prompt_suffix}"
-                r_offset = 2 + display_width(reprompt)
-                tty_w.write(f"\033[1A\r{pad_box_line(reprompt, inner_width)}\n{bottom}\r\033[1A\033[{r_offset}C")
-                tty_w.flush()
             status_line = "✓ Approved by user." if approved else f"✗ Aborted by user (re-run with: {prog_name()} --retry {label})"
-            tty_w.write(f"\033[1A\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
+            tty_w.write(f"\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
             tty_w.flush()
             return approved
     except OSError:

@@ -3,10 +3,10 @@
 # Lines starting with '$ ' (or '! ') are shell commands executed in the project directory.
 
 AGENTS.md
-TODO.md
 
 $ run_block --agents
-$ todo_md --agents
+$ todo_md agents
+$ todo_md
 $ git status -sb
 $ git branch -vv
 $ git log --oneline -10
