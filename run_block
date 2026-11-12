@@ -883,7 +883,7 @@ def confirm_execution(
     try:
         tty_w, tty_r = open_tty()
         with tty_w, tty_r:
-            tty_w.write(f"\n{box}\r\033[1A\033[{cursor_offset}C")
+            tty_w.write(f"{box}\r\033[1A\033[{cursor_offset}C")
             tty_w.flush()
             while True:
                 action = read_confirm_key(tty_r, default_yes=default_yes)
