@@ -6,7 +6,7 @@
 safe execution contract with your local terminal.**
 
 You don't need paid model API access, API keys, background daemons, or heavy IDE plugins.
-`run_block` generates a clear operational contract (`run_block --agents-install` / `run_block --agents`) for any
+`run_block` builds a complete session context bundle (`run_block --start`) and operational contract (`run_block --agents`) for any
 chat LLM (ChatGPT, Claude, Gemini, DeepSeek, etc.). Following that contract, the model proposes
 one numbered Bash block at a time (`s1/1`, `s1/2`, ...). You paste it into your terminal, and
 `run_block` validates syntax (`bash -n`), runs a **Pre-Execution Safety Check** (pausing for
@@ -42,7 +42,7 @@ size and token counts, and copies the result back to your clipboard with a singl
 - **Surgical `--fix` Protocol:** When a long script fails on a typo, the agent sends a compact Python patch (`--fix s1/2`) instead of regenerating the entire block. `run_block` prints a unified diff and runs `s1/2_1`.
 - **Live PTY Streaming + Clean Logs:** Streams live colors and progress bars to your terminal while stripping ANSI escapes and `\r` progress noise from the saved log (`/tmp/run_block/<session>/<step>.txt`).
 - **Built-in Token & Size Telemetry:** Displays exact byte size and token counts for **Claude**, **GPT**, and **Gemini** before copying to the clipboard.
-- **Automated Agent Onboarding (`--agents-install` / `--agents`):** Installs or updates a version-tagged Markdown instruction block directly inside your project's `AGENTS.md` (or `CLAUDE.md`) so your agent instructions always stay in sync.
+- **Declarative Session Context Bundler (`--start` & `.run_block.start`):** Assembles project files (`AGENTS.md`, `TODO.md`), dynamic tool instructions (`$ run_block --agents`, `$ todo_md --agents`), and Git state into `/tmp/run_block/<session>/0.txt` with token counts and one-keystroke clipboard copy.
 
 ---
 
@@ -80,43 +80,56 @@ irm https://raw.githubusercontent.com/vitalio/run_block/main/install.ps1 | iex
 
 ---
 
-## 🤖 Giving Instructions to Your AI Model
+## 🤖 Starting a Session & Giving Instructions to Your AI Model
 
-To add or update the `run_block` operational contract in your project's `AGENTS.md` (or `CLAUDE.md`), run:
+Create a `.run_block.start` file in your project root (or generate a starter one with `run_block --init-start`):
 
-```bash
-# Automatically create or update ./AGENTS.md in place:
-run_block --agents-install
+```text
+# Plain lines are UTF-8 file paths; lines starting with '$ ' are shell commands
+AGENTS.md
+TODO.md
 
-# Or specify a custom file (e.g. CLAUDE.md):
-run_block --agents-install CLAUDE.md
-
-# Or print the Markdown block to stdout:
-run_block --agents
+$ run_block --agents
+$ git status -sb
+$ git branch -vv
+$ git log --oneline -10
 ```
 
-The generated section is wrapped in `<!-- run_block:start ... -->` / `<!-- run_block:end -->`
-markers and tagged with the current `run_block` version, so re-running `run_block --agents-install`
-after an update cleanly refreshes the section in place without touching the rest of your file.
+Then build the session context bundle (`/tmp/run_block/<session>/0.txt`) and copy it to your clipboard:
+
+```bash
+# Build 0.txt from .run_block.start (plus optional extra files and prompt):
+run_block --start
+run_block --start src/main.py -p "Let's implement feature X"
+
+# Or print only the Markdown instructions for AI agents to stdout:
+run_block --agents
+```
 
 ---
 ## 🛠️ How It Works (Quick Start)
 
-### 1. Start a session (optional — auto-created on first step)
+### 1. Start a session (or let the first block initialize it automatically)
 
 ```bash
+# Option A: Build a context bundle (/tmp/run_block/s1/0.txt) for a new chat:
 run_block --start
-# -> s1
-```
 
-### 2. Run a block given by the AI agent
-
-The agent gives you a fenced block at the end of its message:
-
-```bash
-run_block s1/1 <<'RUN_BLOCK'
+# Option B: If you started a chat without --start, the agent omits <session>/<step>
+# on the first block and run_block automatically initializes the session as <session>/1:
+run_block <<'RUN_BLOCK'
 git status -sb
 uname -a
+RUN_BLOCK
+```
+
+### 2. Run subsequent blocks given by the AI agent
+
+Once the session ID (`s1`) is known, the agent gives numbered blocks (`s1/2`, `s1/3`, ...):
+
+```bash
+run_block s1/2 <<'RUN_BLOCK'
+python3 -m unittest
 RUN_BLOCK
 ```
 
@@ -236,15 +249,15 @@ run_block --update
 
 | Command / Flag | Description |
 | :--- | :--- |
-| `run_block <session>/<step>` | Read a Bash script from `stdin`, check syntax & safety, run, and log output |
+| `run_block [<session>/<step>]` | Read a Bash script from `stdin` (omit ref on first block to auto-init `<session>/1`) |
 | `run_block --fix <session>/<target>` | Apply a Python patch from `stdin` to `<target>.sh` and run as `<target>_N` |
 | `run_block --retry [session/step]` | Re-run the last block (or a specified block, e.g. after aborting) |
 | `run_block --list`, `-l [session]` | List sessions and recent blocks with their status and summary |
-| `run_block --show [session/step]` | Show the saved script and output of the last (or specified) block |
-| `run_block --start [--force] [session]` | Create a new session directory (`s1`, `s2`, ...) |
+| `run_block --show [session/step]` | Show the saved script and output of the last (or specified) block (including `<session>/0`) |
+| `run_block --start [options] [FILE ...]` | Create a new session and build `<session>/0.txt` from `.run_block.start` |
+| `run_block --init-start [--force]` | Create a starter `.run_block.start` file in the current directory |
 | `run_block --config` | Show active configuration values and their sources |
 | `run_block --init-config [--force]` | Create `~/.config/run_block/config` with commented defaults |
-| `run_block --agents-install [FILE]` | Create or update the `run_block` section in `FILE` (default: `AGENTS.md`) |
 | `run_block --agents` | Print Markdown instructions for AI agents to `stdout` |
 | `run_block --check-update` | Check GitHub (`vitalio/run_block`) for a newer version |
 | `run_block --update [--force]` | Self-update the installed binary in place and print updated agent instructions |

@@ -137,7 +137,7 @@ case ":${PATH:-}:" in
         echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
         ;;
 esac
-echo "Tip: run '$CMD_NAME --agents-install' in any repo to add/update AGENTS.md automatically."
+echo "Tip: run '$CMD_NAME --init-start' and '$CMD_NAME --start' in any repo to build a session context bundle."
 echo "============================================================"
 echo ""
 echo "Below are the Markdown instructions for your AI model (for AGENTS.md / CLAUDE.md):"

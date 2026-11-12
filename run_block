@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # run_block-repo: vitalio/run_block
 """Usage:
-  {prog} <session>/<step>            Run a Bash block from stdin
+  {prog} [<session>/<step>]          Run a Bash block from stdin (omit ref on first block to start a session)
   {prog} --fix <session>/<target>    Patch <target>.sh via Python on stdin and run as <target>_N
   {prog} --retry [session/step]      Re-run the last block (or a specific block, e.g. after aborting)
   {prog} --list | -l [session]       List sessions or steps in a session with their status
   {prog} --show [session/step]       Show saved script and output of the last (or specified) block
-  {prog} --start [--force] [session] Create a new session directory in {base_dir}/ (default: s1, s2, ...)
-  {prog} --agents-install [FILE]      Install or update {prog} instructions in FILE (default: {agents_file})
-  {prog} --agents                    Print Markdown instructions for AI agents (for AGENTS.md / CLAUDE.md)
+  {prog} --start [options] [FILE ..] Build session context bundle ({base_dir}/<session>/0.txt) from .run_block.start
+  {prog} --init-start [--force]      Create a starter .run_block.start file in the current directory
+  {prog} --agents                    Print Markdown instructions for AI agents
   {prog} --config                    Show active configuration and config file path
   {prog} --init-config [--force]     Create a commented default config file at {config_path}
   {prog} --update [--force]          Self-update {prog} from GitHub (vitalio/run_block)
@@ -16,32 +16,41 @@
   {prog} -V | --version              Print version and exit 0
   {prog} -h | --help                 Print this usage and exit 0
 
+Options for --start:
+  --session NAME           Explicit session name in {base_dir}/ (default: s1, s2, ...)
+  -p, --prompt TEXT        Append an explicit task/prompt section at the end of 0.txt
+  --force                  Overwrite existing session directory without prompting
+  FILE ...                 Additional repository files to include in 0.txt
+
 Reads a Bash script (or Python patch in --fix mode) from stdin, saves it under
 {base_dir}/<session>/, checks syntax with bash -n, displays a detailed BLOCK PLAN
 (highlighting any safety warnings) and asks for confirmation before running,
 executes it from the current Git repository root (or current directory), and
 streams stdout+stderr to both the terminal and {base_dir}/<session>/<step>.txt.
 
+When invoked with no arguments and a script on stdin, automatically initializes
+a new session (or reuses a session just prepared by --start) and runs step 1.
+Step 0 (0.txt) is reserved for the session start context bundle.
 Refuses to overwrite an already-used step or skip a sequential step number.
 At the end of execution, press Enter to copy the output to your clipboard or Esc to skip.
 
 Configuration file ({config_path}):
   base_dir = /tmp/{prog}             Session and log directory
   work_dir = auto                    Working directory: auto (Git root or $PWD), cwd, or path
-  agents_file = AGENTS.md            Default target file for --agents-install
   clipboard = prompt                 After execution: prompt | auto | never
   token_stats = true                 Show size & Claude/GPT/Gemini token counts: true | false
   shell = bash                       Shell executable used for syntax check and execution
+  editor = auto                      Terminal editor/viewer for 'v' in BLOCK PLAN (auto, nano, vim, less, ...)
 
 Environment variables (override config file):
   RUN_BLOCK_CONFIG         Path to config file (default: {config_path})
   RUN_BLOCK_DIR            Override base_dir (default: {base_dir})
   RUN_BLOCK_CWD            Override work_dir for executed blocks
-  RUN_BLOCK_AGENTS_FILE    Override default file for --agents-install (default: AGENTS.md)
   RUN_BLOCK_CLIPBOARD      Override clipboard mode: prompt | auto | never
   RUN_BLOCK_NO_CLIPBOARD=1 Alias for RUN_BLOCK_CLIPBOARD=never
   RUN_BLOCK_TOKEN_STATS    Override token_stats: 1/true or 0/false
   RUN_BLOCK_SHELL          Override shell executable (default: bash)
+  RUN_BLOCK_EDITOR         Override terminal editor/viewer for BLOCK PLAN (default: auto)
   RUN_BLOCK_UPDATE_URL     Override raw script URL for --update / --check-update
 """
 from __future__ import annotations
@@ -55,6 +64,7 @@ import math
 import os
 import re
 import select
+import shlex
 import shutil
 import subprocess
 import sys
@@ -63,6 +73,7 @@ import textwrap
 import time
 import unicodedata
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -76,11 +87,10 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
-AGENTS_START_MARKER_PREFIX = "<!-- run_block:start"
-AGENTS_END_MARKER = "<!-- run_block:end -->"
+START_FILE_NAME = ".run_block.start"
 
 
 def prog_name() -> str:
@@ -155,12 +165,6 @@ def get_setting(key: str, prog: str | None = None) -> tuple[str, str]:
         if "work_dir" in cfg and cfg["work_dir"]:
             return cfg["work_dir"], "config"
         return "auto", "default"
-    if key == "agents_file":
-        if os.environ.get("RUN_BLOCK_AGENTS_FILE"):
-            return os.environ["RUN_BLOCK_AGENTS_FILE"].strip(), "env"
-        if "agents_file" in cfg and cfg["agents_file"]:
-            return cfg["agents_file"].strip(), "config"
-        return "AGENTS.md", "default"
     if key == "clipboard":
         if os.environ.get("RUN_BLOCK_NO_CLIPBOARD") == "1":
             return "never", "env"
@@ -183,6 +187,12 @@ def get_setting(key: str, prog: str | None = None) -> tuple[str, str]:
         if "shell" in cfg and cfg["shell"]:
             return cfg["shell"].strip(), "config"
         return "bash", "default"
+    if key == "editor":
+        if os.environ.get("RUN_BLOCK_EDITOR"):
+            return os.environ["RUN_BLOCK_EDITOR"].strip(), "env"
+        if "editor" in cfg and cfg["editor"]:
+            return cfg["editor"].strip(), "config"
+        return "auto", "default"
     if key == "update_url":
         if os.environ.get("RUN_BLOCK_UPDATE_URL"):
             return os.environ["RUN_BLOCK_UPDATE_URL"].strip(), "env"
@@ -216,9 +226,6 @@ def default_config_template(prog: str | None = None) -> str:
         "#   /path/to/dir -> explicit directory path",
         "work_dir = auto",
         "",
-        "# Default target file for --agents-install when no file argument is passed:",
-        "agents_file = AGENTS.md",
-        "",
         "# Clipboard behavior after a block finishes:",
         "#   prompt -> press Enter to copy output to clipboard or Esc to skip (default)",
         "#   auto   -> copy output to clipboard automatically without prompting",
@@ -231,6 +238,10 @@ def default_config_template(prog: str | None = None) -> str:
         "# Shell executable used for syntax checking (-n) and running blocks:",
         "shell = bash",
         "",
+        "# Terminal editor/viewer opened when pressing 'v' or 'e' in BLOCK PLAN:",
+        "#   auto -> uses $VISUAL, $EDITOR, nano, less, or vi",
+        "editor = auto",
+        "",
     ]
     return "\n".join(lines)
 
@@ -241,7 +252,7 @@ def cmd_show_config() -> int:
     exists_str = "exists" if cfg_path.is_file() else "not created yet (run --init-config)"
     sys.stdout.write(f"Config file: {cfg_path} ({exists_str})\n\n")
     sys.stdout.write("Active settings:\n")
-    for k in ("base_dir", "work_dir", "agents_file", "clipboard", "token_stats", "shell"):
+    for k in ("base_dir", "work_dir", "clipboard", "token_stats", "shell", "editor"):
         val, src = get_setting(k, prog=prog)
         sys.stdout.write(f"  {k:<12} = {val}  (from {src})\n")
     return 0
@@ -263,17 +274,13 @@ def usage_text() -> str:
     prog = prog_name()
     bdir = default_base_dir(prog)
     cpath = config_file_path()
-    afile, _ = get_setting("agents_file", prog=prog)
-    return (__doc__ or "").format(prog=prog, base_dir=bdir, config_path=cpath, agents_file=afile)
+    return (__doc__ or "").format(prog=prog, base_dir=bdir, config_path=cpath)
 
 
-def agents_markdown(prog: str | None = None, with_markers: bool = True) -> str:
+def agents_markdown(prog: str | None = None) -> str:
     cmd = prog or prog_name()
     f3 = chr(96) * 3
-    lines = []
-    if with_markers:
-        lines.append(f"<!-- run_block:start v{VERSION} -->")
-    lines.extend([
+    lines = [
         f"## Terminal blocks (`{cmd}` v{VERSION})",
         "",
         "You have no direct shell access. Run commands by giving the user a",
@@ -284,21 +291,35 @@ def agents_markdown(prog: str | None = None, with_markers: bool = True) -> str:
         "- Place it at the **very end** of your reply with **zero trailing text** after the closing fence.",
         "- Never assume a block ran until the user pastes its output.",
         "",
-        "### 1. Normal block (`<session>/<step>`)",
+        "### 1. First block in a new session (no `<session>/<step>`)",
         "",
-        "Use the session ID (`s1`, `s2`, ...) and the next sequential step number (`1`, `2`, `3`, ...):",
+        "When starting a chat where the session ID is not yet known, omit `<session>/<step>` on the **first** block:",
         "",
         f"{f3}bash",
-        f"{cmd} s1/1 <<'RUN_BLOCK'",
+        f"{cmd} <<'RUN_BLOCK'",
         "git status -sb",
         "RUN_BLOCK",
         f"{f3}",
         "",
+        f"- `{cmd}` automatically initializes a new session (or uses the session prepared by `{cmd} --start`) and runs step `1` (`<session>/1`), returning `[<session>/1]` in the output header.",
+        "- Do **not** guess `s1/1` when the session ID is unknown (`s1` may already exist).",
+        "",
+        "### 2. Subsequent normal blocks (`<session>/<step>`)",
+        "",
+        "Once you know `<session>` (from the `[<session>/1]` output header or from `Session: <session>` / `Next block: <session>/1` in a session start bundle), pass `<session>/<step>` explicitly with the next sequential step number (`1`, `2`, `3`, ...):",
+        "",
+        f"{f3}bash",
+        f"{cmd} s1/2 <<'RUN_BLOCK'",
+        "git diff",
+        "RUN_BLOCK",
+        f"{f3}",
+        "",
         "- Runs in `bash` from the repository root (or current working directory).",
+        "- Step `0` (`0.txt`) is reserved for the session start context bundle; executable blocks always start at `1`.",
         "- Every launched step consumes its number, even if it fails. Never reuse a step number or skip ahead.",
         "- **Markdown fence safety:** Keep a blank line before the opening fence. Never put literal triple backticks or the heredoc delimiter (`RUN_BLOCK` / `RUN_FIX`) inside a block body (in Python, build backticks as `F3 = chr(96) * 3`).",
         "",
-        "### 2. Fixing a failed block (`--fix <session>/<target>`)",
+        "### 3. Fixing a failed block (`--fix <session>/<target>`)",
         "",
         "When a long block fails on a small mistake and re-running is safe, patch the previous script (`text` in Python) instead of regenerating the whole block:",
         "",
@@ -313,48 +334,8 @@ def agents_markdown(prog: str | None = None, with_markers: bool = True) -> str:
         "",
         "- Modifies `text` from `<target>` and runs it as `<target>_1` (fixing `2` runs `2_1`; fixing `2_1` runs `2_2`).",
         "- If the failed run already partially changed state and is not idempotent, use the next normal step (`s1/3`) instead of `--fix`.",
-    ])
-    if with_markers:
-        lines.append(AGENTS_END_MARKER)
+    ]
     return "\n".join(lines)
-
-def cmd_agent_install(target_arg: str | None = None, prog: str | None = None) -> int:
-    cmd = prog or prog_name()
-    if target_arg:
-        target = Path(target_arg).expanduser()
-    else:
-        default_name, _ = get_setting("agents_file", prog=cmd)
-        target = Path.cwd() / default_name
-    block = agents_markdown(cmd, with_markers=True)
-    if not target.exists():
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(block + "\n", encoding="utf-8")
-        sys.stdout.write(f"{cmd}: created {target} with {cmd} v{VERSION} instructions\n")
-        return 0
-
-    content = target.read_text(encoding="utf-8")
-    marker_re = re.compile(r"<!--\s*run_block:start[^>]*-->.*?<!--\s*run_block:end\s*-->", flags=re.DOTALL)
-    if marker_re.search(content):
-        new_content = marker_re.sub(lambda _: block, content, count=1)
-        if new_content == content:
-            sys.stdout.write(f"{cmd}: {target} already has up-to-date {cmd} v{VERSION} instructions\n")
-        else:
-            target.write_text(new_content, encoding="utf-8")
-            sys.stdout.write(f"{cmd}: updated {cmd} instructions to v{VERSION} in {target}\n")
-        return 0
-
-    # Fallback: check if there is an unmarked '## ... Terminal blocks (...) — the model's tools' section
-    sec_re = re.compile(r"(^##\s+(?:\d+\.\s+)?Terminal blocks\s+\([^\n]*\n.*?)(?=^##\s+|\Z)", flags=re.MULTILINE | re.DOTALL)
-    if sec_re.search(content):
-        new_content = sec_re.sub(lambda _: block + "\n\n", content, count=1)
-        target.write_text(new_content, encoding="utf-8")
-        sys.stdout.write(f"{cmd}: wrapped and updated existing Terminal blocks section to v{VERSION} in {target}\n")
-        return 0
-
-    sep = "" if not content.strip() else ("\n" if content.endswith("\n\n") else ("\n\n" if content.endswith("\n") else "\n\n"))
-    target.write_text(content + sep + block + "\n", encoding="utf-8")
-    sys.stdout.write(f"{cmd}: appended {cmd} v{VERSION} instructions to {target}\n")
-    return 0
 
 
 def get_work_dir() -> Path:
@@ -657,7 +638,14 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
                     }
                 )
                 break
-    return findings
+    deduped: list[dict[str, object]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for f in findings:
+        pair = (str(f["category"]), str(f["snippet"]))
+        if pair not in seen_pairs:
+            seen_pairs.add(pair)
+            deduped.append(f)
+    return deduped
 
 
 def open_tty():
@@ -745,7 +733,7 @@ def format_safety_box(
         title = f" [{label}] BLOCK PLAN ({meta_str}) "
     else:
         title = f" [{label}] BLOCK PLAN "
-    prompt_suffix = "[Y/n]: " if default_yes else "[y/n]: "
+    prompt_suffix = "[Y/n/v(iew)]: " if default_yes else "[y/n/v(iew)]: "
     prompt_line = f"-> Execute this block? {prompt_suffix}"
     term_cols = shutil.get_terminal_size((100, 24)).columns
     max_row_len = max(64, term_cols - 6)
@@ -762,10 +750,7 @@ def format_safety_box(
             if content_lines:
                 content_lines.append("")
             content_lines.append("Operations:")
-            shown_ops = ops[:16]
-            content_lines.extend(_wrap_labeled_items(shown_ops, max_row_len, indent="  "))
-            if len(ops) > 16:
-                content_lines.append(f"  ... (+{len(ops) - 16} more operations)")
+            content_lines.extend(_wrap_labeled_items(ops, max_row_len, indent="  "))
 
     if findings:
         if content_lines:
@@ -795,7 +780,87 @@ def format_safety_box(
     return box, inner_width, cursor_col_offset
 
 
-def confirm_execution(label: str, script_text: str, summary: dict[str, object] | None = None) -> bool:
+GUI_EDITORS = {"gvim", "mvim", "code", "code-insiders", "subl", "gedit", "kate", "mousepad", "xed"}
+
+
+def resolve_editor_command() -> list[str]:
+    cfg_ed, _ = get_setting("editor")
+    if cfg_ed and cfg_ed.lower() != "auto":
+        return shlex.split(cfg_ed)
+    for env_k in ("VISUAL", "EDITOR"):
+        val = os.environ.get(env_k, "").strip()
+        if val:
+            parts = shlex.split(val)
+            if parts and Path(parts[0]).name.lower() not in GUI_EDITORS:
+                return parts
+    for candidate in ("nano", "vim", "less", "vi", "more"):
+        if shutil.which(candidate):
+            return [candidate]
+    return ["vi"]
+
+
+def open_script_in_editor(script_path: Path, tty_r, tty_w) -> None:
+    cmd = resolve_editor_command() + [str(script_path)]
+    try:
+        subprocess.run(cmd, stdin=tty_r, stdout=tty_w, stderr=tty_w, check=False)
+    except Exception as exc:
+        tty_w.write(f"\n[editor error: {exc}]\n")
+        tty_w.flush()
+
+
+def read_confirm_key(tty_r, default_yes: bool) -> str:
+    """Reads a single key: returns 'yes', 'no', or 'view'."""
+    flush_tty_input(tty_r)
+    if not HAS_PTY or termios is None or tty is None:
+        ans = tty_r.readline().strip().lower()
+        if ans in ("v", "view", "e", "edit"):
+            return "view"
+        if default_yes and ans in ("", "y", "yes"):
+            return "yes"
+        if not default_yes and ans in ("y", "yes"):
+            return "yes"
+        if ans in ("n", "no", "q", "esc"):
+            return "no"
+        return "invalid"
+    fd = tty_r.fileno()
+    try:
+        old_attrs = termios.tcgetattr(fd)
+    except Exception:
+        ans = tty_r.readline().strip().lower()
+        return "view" if ans in ("v", "view", "e", "edit") else ("yes" if ans in ("y", "yes") else "no")
+    try:
+        tty.setraw(fd, termios.TCSANOW)
+        while True:
+            ch = os.read(fd, 1)
+            if not ch:
+                return "no"
+            if ch in (b"v", b"V", b"e", b"E"):
+                return "view"
+            if ch in (b"y", b"Y"):
+                return "yes"
+            if default_yes and ch in (b"\r", b"\n"):
+                return "yes"
+            if ch in (b"n", b"N", b"q", b"Q", b"\x03", b"\x04"):
+                return "no"
+            if ch == b"\x1b":
+                rlist, _, _ = select.select([fd], [], [], 0.05)
+                if rlist:
+                    os.read(fd, 32)
+                    continue
+                return "no"
+    finally:
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+        except Exception:
+            pass
+
+
+def confirm_execution(
+    label: str,
+    script_text: str,
+    summary: dict[str, object] | None = None,
+    script_path: Path | None = None,
+) -> bool:
     if in_run_block():
         return True
     findings = scan_script_risks(script_text)
@@ -808,29 +873,30 @@ def confirm_execution(label: str, script_text: str, summary: dict[str, object] |
     default_yes = (len(findings) == 0)
     box, inner_width, cursor_offset = format_safety_box(label, findings, default_yes=default_yes, summary=summary)
     bottom = f"└─{'─' * inner_width}─┘"
+    prompt_suffix = "[Y/n/v(iew)]: " if default_yes else "[y/n/v(iew)]: "
+    prompt_line = f"-> Execute this block? {prompt_suffix}"
     try:
         tty_w, tty_r = open_tty()
         with tty_w, tty_r:
-            flush_tty_input(tty_r)
             tty_w.write(f"\n{box}\r\033[1A\033[{cursor_offset}C")
             tty_w.flush()
             while True:
-                ans = tty_r.readline().strip().lower()
-                if default_yes:
-                    approved = ans in ("", "y", "yes")
-                    break
-                if ans in ("y", "yes"):
+                action = read_confirm_key(tty_r, default_yes=default_yes)
+                if action == "view":
+                    if script_path is not None and script_path.is_file():
+                        open_script_in_editor(script_path, tty_r, tty_w)
+                        p_offset = 2 + display_width(prompt_line)
+                        tty_w.write(f"\r{pad_box_line(prompt_line, inner_width)}\n{bottom}\r\033[1A\033[{p_offset}C")
+                        tty_w.flush()
+                    continue
+                if action == "yes":
                     approved = True
                     break
-                if ans in ("n", "no"):
+                if action == "no":
                     approved = False
                     break
-                reprompt = "-> Please type 'y' to execute or 'n' to abort [y/n]: "
-                r_offset = 2 + display_width(reprompt)
-                tty_w.write(f"\033[1A\r{pad_box_line(reprompt, inner_width)}\n{bottom}\r\033[1A\033[{r_offset}C")
-                tty_w.flush()
             status_line = "✓ Approved by user." if approved else f"✗ Aborted by user (re-run with: {prog_name()} --retry {label})"
-            tty_w.write(f"\033[1A\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
+            tty_w.write(f"\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
             tty_w.flush()
             return approved
     except OSError:
@@ -856,6 +922,23 @@ def next_session_name(base: Path) -> str:
     while n in used:
         n += 1
     return f"s{n}"
+
+
+def resolve_initial_session(base: Path) -> str:
+    """Returns an existing prepared session (that has no step 1 yet) or the next new session name."""
+    candidates: list[tuple[int, Path]] = []
+    for p in base.iterdir():
+        if p.is_dir():
+            m = re.fullmatch(r"s(\d+)", p.name)
+            if m:
+                candidates.append((int(m.group(1)), p))
+    if candidates:
+        candidates.sort(key=lambda item: item[0])
+        _, latest_dir = candidates[-1]
+        has_blocks = any(latest_dir.glob("*.sh")) or (latest_dir / "1.txt").exists() or (latest_dir / "1.aborted").exists()
+        if not has_blocks:
+            return latest_dir.name
+    return next_session_name(base)
 
 
 def start_session(name: str | None = None, force: bool = False) -> Path:
@@ -1003,7 +1086,7 @@ def run_script(
 
     aborted_marker = script_path.with_suffix(".aborted")
     summary_obj = summarize_script_actions(script_text)
-    if not confirm_execution(label, script_text, summary=summary_obj):
+    if not confirm_execution(label, script_text, summary=summary_obj, script_path=script_path):
         write_private(aborted_marker, "aborted\n", overwrite=True)
         return not_run_exit(label, script_path.parent, script_path.stem, out_path, f"[{label}] NOT RUN: aborted by user (re-run with: {prog_name()} --retry {label})", rc=130)
     aborted_marker.unlink(missing_ok=True)
@@ -1095,7 +1178,8 @@ def run_script(
     if log_chunks and not log_chunks[-1].endswith("\n"):
         log_chunks.append("\n")
         sys.stdout.write("\n")
-    end_line = f"\n[{label}] END (exit {rc}) — output: {out_path}\n"
+    exit_str = f" (exit {rc})" if rc != 0 else ""
+    end_line = f"\n[{label}] END{exit_str} — output: {out_path}\n"
     log_chunks.append(end_line)
     if in_run_block() or not sys.stdout.isatty() or clipboard_mode() != "prompt":
         sys.stdout.write(end_line)
@@ -1162,10 +1246,8 @@ def pad_box_line(text: str, inner_width: int) -> str:
 def format_clipboard_box(
     label: str, out_path: Path, ok: bool = True, rc: int | None = None, stats: str | None = None
 ) -> tuple[str, int, int]:
-    if rc is not None:
+    if rc is not None and rc != 0:
         state = f"END (exit {rc})"
-    elif ok:
-        state = "END (exit 0)"
     else:
         state = "END"
     title = f" [{label}] {state} "
@@ -1306,12 +1388,8 @@ def cmd_update(force: bool = False, url: str | None = None, target_path: Path | 
     except Exception as exc:
         sys.stderr.write(f"{prog}: could not write updated binary to {dest}: {exc}\n")
         return 1
-    sys.stdout.write(f"{prog}: updated {VERSION} -> {remote_ver} ({dest})\n")
-    sys.stdout.write(f"Tip: run '{prog} --agents-install [FILE]' to automatically update your AGENTS.md.\n\n")
-    sys.stdout.write(
-        f"=== Updated AI Agent Instructions ({prog} v{remote_ver}) ===\n"
-        "Please verify that your AGENTS.md / CLAUDE.md matches the instructions below:\n\n"
-    )
+    sys.stdout.write(f"{prog}: updated {VERSION} -> {remote_ver} ({dest})\n\n")
+    sys.stdout.write(f"=== Updated AI Agent Instructions ({prog} v{remote_ver}) ===\n\n")
     sys.stdout.flush()
     subprocess.run([str(dest), "--agents"], check=False)
     return 0
@@ -1455,6 +1533,243 @@ def _find_latest_step(session: str | None = None) -> tuple[str, str]:
     raise SystemExit(f"{prog_name()}: no saved blocks found in {base}")
 
 
+def default_start_template(prog: str | None = None) -> str:
+    cmd = prog or prog_name()
+    lines = [
+        f"# {START_FILE_NAME} — session context bundle specification for '{cmd} --start'",
+        "# Plain lines are file paths (read directly as UTF-8 relative to the project root).",
+        "# Lines starting with '$ ' (or '! ') are shell commands executed in the project directory.",
+        "",
+        "AGENTS.md",
+        "TODO.md",
+        "",
+        f"$ {cmd} --agents",
+        "$ git status -sb",
+        "$ git branch -vv",
+        "$ git log --oneline -10",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def cmd_init_start(force: bool = False, target_dir: Path | None = None) -> int:
+    prog = prog_name()
+    base_dir = target_dir if target_dir is not None else Path.cwd()
+    path = base_dir / START_FILE_NAME
+    if path.exists() and not force:
+        sys.stderr.write(f"{prog}: {path} already exists (use --force to overwrite)\n")
+        return 2
+    path.write_text(default_start_template(prog), encoding="utf-8")
+    sys.stdout.write(f"{prog}: wrote starter {START_FILE_NAME} to {path}\n")
+    return 0
+
+
+def find_start_file(work_dir: Path) -> tuple[Path | None, Path]:
+    cwd = Path.cwd().resolve()
+    cwd_candidate = cwd / START_FILE_NAME
+    if cwd_candidate.is_file():
+        return cwd_candidate, cwd
+    wdir = work_dir.resolve()
+    wdir_candidate = wdir / START_FILE_NAME
+    if wdir_candidate.is_file():
+        return wdir_candidate, wdir
+    return None, wdir
+
+
+def parse_start_spec(text: str) -> list[tuple[str, str]]:
+    """Returns list of (kind, value) where kind is 'file' or 'cmd'."""
+    entries: list[tuple[str, str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("$ ") or line.startswith("! "):
+            cmd_str = line[2:].strip()
+            if cmd_str:
+                entries.append(("cmd", cmd_str))
+        elif line in ("$", "!"):
+            continue
+        else:
+            entries.append(("file", line))
+    return entries
+
+
+def _run_start_command(cmd_str: str, cwd: Path) -> tuple[int, str]:
+    prog = prog_name()
+    self_path = str(Path(__file__).resolve())
+    # If the command invokes '<prog> --agents' directly, call our own agents_markdown() in-process
+    if re.fullmatch(rf"{re.escape(prog)}\s+--agents(?:-md)?", cmd_str) or re.fullmatch(r"run_block\s+--agents(?:-md)?", cmd_str):
+        return 0, agents_markdown(prog)
+    shell_bin, _ = get_setting("shell")
+    env = {**os.environ, "IN_RUN_BLOCK": "1", "PYTHONUTF8": "1"}
+    # Ensure the directory containing this script is on PATH
+    script_dir = str(Path(self_path).parent)
+    env["PATH"] = f"{script_dir}{os.pathsep}{env.get('PATH', '')}"
+    try:
+        r = subprocess.run(
+            [shell_bin, "-c", cmd_str],
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            check=False,
+        )
+        return r.returncode, r.stdout.decode("utf-8", errors="replace").rstrip()
+    except OSError as exc:
+        return 1, f"[error running {cmd_str!r}: {exc}]"
+
+
+def build_start_bundle(
+    session_name: str,
+    work_dir: Path | None = None,
+    extra_files: list[str] | None = None,
+    prompt_text: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    prog = prog_name()
+    wdir = (work_dir if work_dir is not None else get_work_dir()).resolve()
+    start_file, spec_dir = find_start_file(wdir)
+    if start_file is not None:
+        entries = parse_start_spec(start_file.read_text(encoding="utf-8"))
+        spec_source = str(start_file)
+    else:
+        spec_source = "built-in defaults"
+        entries = []
+        for default_f in ("AGENTS.md", "TODO.md"):
+            if (spec_dir / default_f).is_file():
+                entries.append(("file", default_f))
+        entries.append(("cmd", f"{prog} --agents"))
+        if (spec_dir / ".git").exists():
+            entries.append(("cmd", "git status -sb"))
+
+    sections: list[tuple[str, str]] = []
+    warnings: list[str] = []
+    included_files: set[Path] = set()
+
+    def add_file_section(rel_path: str, base_folder: Path, explicit: bool) -> None:
+        clean = rel_path.strip()
+        if not clean:
+            return
+        p = (base_folder / clean).resolve() if not Path(clean).is_absolute() else Path(clean).resolve()
+        if p in included_files:
+            return
+        if not p.is_file():
+            if explicit or start_file is not None:
+                warnings.append(f"missing file: {clean}")
+            return
+        included_files.add(p)
+        try:
+            disp = str(p.relative_to(spec_dir))
+        except ValueError:
+            disp = str(p)
+        content = p.read_text(encoding="utf-8", errors="replace").rstrip()
+        sections.append((f"File: {disp}", content))
+
+    for kind, val in entries:
+        if kind == "file":
+            add_file_section(val, spec_dir, explicit=False)
+        elif kind == "cmd":
+            rc, out = _run_start_command(val, spec_dir)
+            if rc != 0:
+                warnings.append(f"command exited {rc}: {val}")
+            sections.append((f"$ {val}", out))
+
+    for extra in extra_files or []:
+        add_file_section(extra, Path.cwd().resolve(), explicit=True)
+
+    if prompt_text and prompt_text.strip():
+        sections.append(("Prompt", prompt_text.strip()))
+
+    ts = (now or datetime.now().astimezone()).strftime("%Y-%m-%d %H:%M %Z").strip()
+    manifest_lines: list[str] = []
+    body_blocks: list[str] = []
+    for title, content in sections:
+        n_lines = len(content.splitlines()) if content else 0
+        t_counts = count_tokens(content.encode("utf-8"))
+        approx_tok = t_counts["gpt"]
+        manifest_lines.append(f"  - {title}: {n_lines} lines (~{approx_tok} tokens)")
+        body_blocks.append(f"===== {title} =====\n{content}\n")
+
+    header_lines = [
+        f"# {prog} session context bundle",
+        f"Session: {session_name}",
+        f"Next block: {session_name}/1",
+        f"Date: {ts}",
+        f"Workdir: {spec_dir}",
+        f"Spec: {spec_source}",
+        "Included sections:",
+        *manifest_lines,
+    ]
+    if warnings:
+        header_lines.append("Warnings:")
+        header_lines.extend(f"  - {w}" for w in warnings)
+
+    header_text = "\n".join(header_lines) + "\n"
+    body_text = "\n".join(body_blocks)
+    full_text = header_text + "\n" + body_text
+    total_lines = len(full_text.splitlines())
+    total_tokens = count_tokens(full_text.encode("utf-8"))["gpt"]
+    return {
+        "header": header_text,
+        "body": body_text,
+        "full": full_text,
+        "warnings": warnings,
+        "total_lines": total_lines,
+        "total_tokens": total_tokens,
+    }
+
+
+def cmd_start(argv: list[str]) -> int:
+    prog = prog_name()
+    force = False
+    session_arg: str | None = None
+    prompt_parts: list[str] = []
+    extra_files: list[str] = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--force":
+            force = True
+            i += 1
+        elif a == "--session":
+            if i + 1 >= len(argv):
+                raise SystemExit(f"{prog}: --session requires an argument")
+            session_arg = argv[i + 1]
+            i += 2
+        elif a in ("-p", "--prompt"):
+            if i + 1 >= len(argv):
+                raise SystemExit(f"{prog}: {a} requires an argument")
+            prompt_parts.append(argv[i + 1])
+            i += 2
+        elif a.startswith("-"):
+            raise SystemExit(f"{prog}: unknown option for --start: {a}")
+        else:
+            extra_files.append(a)
+            i += 1
+
+    # Backward compatibility: if a single positional argument is not an existing file and matches session name (e.g. s2)
+    if session_arg is None and len(extra_files) == 1 and not Path(extra_files[0]).exists() and re.fullmatch(r"s\d+", extra_files[0]):
+        session_arg = extra_files.pop(0)
+
+    sdir = start_session(session_arg, force=force)
+    session_name = sdir.name
+    bundle_path = sdir / "0.txt"
+    prompt_text = "\n\n".join(prompt_parts) if prompt_parts else None
+    res = build_start_bundle(
+        session_name=session_name,
+        extra_files=extra_files,
+        prompt_text=prompt_text,
+    )
+    write_private(bundle_path, str(res["full"]), overwrite=True)
+    sys.stdout.write(str(res["header"]))
+    sys.stdout.write(f"[{session_name}] Total: {res['total_lines']} lines (~{res['total_tokens']} tokens)\n")
+    sys.stdout.write(f"[{session_name}] Bundle: {bundle_path}\n")
+    sys.stdout.flush()
+    if not in_run_block():
+        offer_clipboard_copy(f"{session_name}/0", bundle_path, ok=True, rc=0)
+    return 0
+
+
 def cmd_list(session: str | None = None) -> int:
     base = ensure_base()
     if not session:
@@ -1465,7 +1780,13 @@ def cmd_list(session: str | None = None) -> int:
         sys.stdout.write(f"Sessions in {base}:\n")
         for sdir in sdirs:
             scripts = sorted([p.stem for p in sdir.glob("*.sh")], key=_step_sort_key)
-            last = f"{sdir.name}/{scripts[-1]} ({_step_status(sdir, scripts[-1])})" if scripts else "empty"
+            has_bundle = (sdir / "0.txt").is_file()
+            if scripts:
+                last = f"{sdir.name}/{scripts[-1]} ({_step_status(sdir, scripts[-1])})"
+            elif has_bundle:
+                last = f"{sdir.name}/0 (BUNDLE)"
+            else:
+                last = "empty"
             sys.stdout.write(f"  {sdir.name:<8}  {len(scripts):>3} block(s)   last: {last}\n")
         session = sdirs[-1].name
         sys.stdout.write(f"\nRecent blocks in {session}:\n")
@@ -1475,6 +1796,9 @@ def cmd_list(session: str | None = None) -> int:
             raise SystemExit(f"{prog_name()}: session {session!r} not found in {base}")
         sys.stdout.write(f"Blocks in {session}:\n")
     sdir = base / session
+    if (sdir / "0.txt").is_file():
+        ref0 = f"{session}/0"
+        sys.stdout.write(f"  {ref0:<10}  {'BUNDLE':<24}  Session context bundle (0.txt)\n")
     scripts = sorted([p.stem for p in sdir.glob("*.sh")], key=_step_sort_key)
     for stem in scripts[-15:]:
         st = _step_status(sdir, stem)
@@ -1497,6 +1821,10 @@ def cmd_show(ref: str | None = None) -> int:
     sdir = ensure_base() / session
     script_path = sdir / f"{step}.sh"
     out_path = sdir / f"{step}.txt"
+    if step == "0" and out_path.is_file():
+        sys.stdout.write(f"=== [{session}/0] Bundle: {out_path} ===\n")
+        sys.stdout.write(out_path.read_text(encoding="utf-8", errors="replace"))
+        return 0
     if not script_path.is_file():
         raise SystemExit(f"{prog_name()}: block {session}/{step} not found ({script_path})")
     sys.stdout.write(f"=== [{session}/{step}] Script: {script_path} ({_step_status(sdir, step)}) ===\n")
@@ -1536,15 +1864,16 @@ def main(argv: list[str] | None = None) -> int:
     if "--init-config" in args:
         force = "--force" in args
         return cmd_init_config(force=force)
-    if "--agents-install" in args or "--agent-install" in args:
-        rest = [a for a in args if a not in ("--agents-install", "--agent-install")]
-        if len(rest) > 1:
-            raise SystemExit(f"{prog}: usage: {prog} --agents-install [FILE]")
-        return cmd_agent_install(rest[0] if rest else None, prog=prog)
+    if "--init-start" in args:
+        force = "--force" in args
+        return cmd_init_start(force=force)
     if "--agents" in args or "--agents-md" in args:
         sys.stdout.write(agents_markdown(prog) + "\n")
         return 0
     if not args:
+        if not sys.stdin.isatty():
+            session = resolve_initial_session(ensure_base())
+            return cmd_normal(f"{session}/1", sys.stdin.read())
         sys.stderr.write(usage_text())
         return 2
 
@@ -1576,13 +1905,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_update(force=force)
 
     if args[0] == "--start":
-        force = "--force" in args
-        rest = [a for a in args[1:] if a != "--force"]
-        if len(rest) > 1:
-            raise SystemExit(f"{prog}: usage: {prog} --start [--force] [session]")
-        sdir = start_session(rest[0] if rest else None, force=force)
-        sys.stdout.write(f"{sdir.name}\n")
-        return 0
+        return cmd_start(args[1:])
 
     if args[0] == "--fix":
         if len(args) != 2:
@@ -1591,7 +1914,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if len(args) != 1 or args[0].startswith("-"):
         raise SystemExit(
-            f"{prog}: usage: {prog} <session>/<step> (or --fix / --retry / --list / --show / --start / --agents-install / --config / --agents / --update / --version / --help)"
+            f"{prog}: usage: {prog} [<session>/<step>] (or --fix / --retry / --list / --show / --start / --init-start / --config / --agents / --update / --version / --help)"
         )
     return cmd_normal(args[0], sys.stdin.read())
 
