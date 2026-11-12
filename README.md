@@ -34,7 +34,7 @@ Plain lines are UTF-8 file paths; lines starting with `$ ` are shell commands:
 AGENTS.md
 
 $ run_block --agents
-$ todo_md agents
+$ todo_md --agents
 $ todo_md
 $ git status -sb
 $ git branch -vv
