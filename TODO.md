@@ -8,7 +8,7 @@ Task heading format: `### <emoji> [<STATUS>] <ID>: <title>`
 
 ## Resume
 
-Written 2026-11-13. Released `run_block` `v0.6.1`:
+Written 2026-11-13. Released `run_block` `v0.6.2`:
 - Strengthened `run_block --agents` with explicit `CRITICAL — STRICT BLOCK GENERATION & LAYOUT RULES` (strict single-block-per-message rule, end-of-message placement with zero trailing text, column-0 fence/heredoc layout, and no inner triple backticks).
 - Placed `$ run_block --agents` first in `.run_block.start`, `default_start_template()`, and `README.md`.
 - Made `<session>/0.txt` bundle header minimal (`Session`, `Next block`, `Workdir`) while keeping the detailed section/token manifest in console output during `run_block --start`.

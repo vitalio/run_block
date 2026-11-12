@@ -258,7 +258,7 @@ class TestRunBlock(unittest.TestCase):
         (proj / "AGENTS.md").write_text("# My Project Rules\n", encoding="utf-8")
         (proj / "EXTRA.md").write_text("Extra file body\n", encoding="utf-8")
         (proj / ".run_block.start").write_text(
-            "# comment\nAGENTS.md\n$ run_block --agents\n$ echo custom_cmd_output\n",
+            "# comment\nAGENTS.md\nMISSING_DOC.md\n$ run_block --agents\n$ echo custom_cmd_output\n",
             encoding="utf-8",
         )
         env = {**os.environ, "RUN_BLOCK_DIR": str(self.tmp / "sessions"), "RUN_BLOCK_CWD": str(proj)}
@@ -293,8 +293,12 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("Included sections:", r_start.stdout)
         bundle = (self.tmp / "sessions/s2/0.txt").read_text(encoding="utf-8")
         self.assertIn("Session: s2\nNext block: s2/1\nWorkdir:", bundle)
+        self.assertIn("Warnings:", r_start.stdout)
+        self.assertIn("missing file: MISSING_DOC.md", r_start.stdout)
         self.assertNotIn("Included sections:", bundle)
         self.assertNotIn("Spec:", bundle)
+        self.assertNotIn("Warnings:", bundle)
+        self.assertNotIn("MISSING_DOC.md", bundle)
         self.assertIn("===== File: AGENTS.md =====", bundle)
         self.assertIn("# My Project Rules", bundle)
         self.assertIn("===== $ run_block --agents =====", bundle)

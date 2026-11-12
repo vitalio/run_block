@@ -11,7 +11,7 @@ this file, [TODO.md](TODO.md), `run_block --agents`, and current Git state.
 
 - `run_block` — standalone executable Python 3 CLI (zero external dependencies; supports Python 3.9+ on Linux, macOS, and Windows).
 - `.run_block.start` — declarative specification of files and `$ <cmd>` commands bundled by `run_block --start` into `<session>/0.txt`.
-- `VERSION` — single-line semantic version string (`0.6.1`), must match `VERSION` inside `run_block`.
+- `VERSION` — single-line semantic version string (`0.6.2`), must match `VERSION` inside `run_block`.
 - `install.sh` — POSIX shell installer for Linux and macOS (checks `PATH` conflicts, installs to `~/.local/bin`, runs `--agents`).
 - `install.ps1` — PowerShell 7+ installer for Windows.
 - `tests/test_run_block.py` — unit test suite (`unittest`, no network required).
