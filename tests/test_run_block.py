@@ -62,7 +62,8 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("Usage:", r.stdout)
         self.assertIn("--config", r.stdout)
         self.assertIn("--agents", r.stdout)
-        self.assertIn("--agents-install", r.stdout)
+        self.assertIn("--init-start", r.stdout)
+        self.assertNotIn("--agents-install", r.stdout)
 
         rv = subprocess.run([str(SCRIPT), "--version"], capture_output=True, text=True, check=False)
         self.assertEqual(rv.returncode, 0)
@@ -120,7 +121,7 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("Operations:", box)
         self.assertIn("Safety warnings:", box)
         self.assertNotIn("Line ", box)
-        self.assertIn("[y/n]:", box)
+        self.assertIn("[y/n/v(iew)]:", box)
         self.assertEqual(len({self.mod.display_width(l) for l in box.splitlines()}), 1)
 
     def test_agents_markdown_adapts_to_binary_name(self):
@@ -128,7 +129,8 @@ class TestRunBlock(unittest.TestCase):
         self.assertEqual(r_md.returncode, 0)
         self.assertIn(f"## Terminal blocks (`run_block` v{self.mod.VERSION})", r_md.stdout)
         self.assertIn("CRITICAL — ONE BLOCK PER MESSAGE:", r_md.stdout)
-        self.assertIn("run_block s1/1 <<'RUN_BLOCK'", r_md.stdout)
+        self.assertIn("run_block <<'RUN_BLOCK'", r_md.stdout)
+        self.assertIn("run_block s1/2 <<'RUN_BLOCK'", r_md.stdout)
         self.assertNotIn("/tmp/", r_md.stdout)
 
         custom_bin = self.tmp / "run_term_block"
@@ -138,7 +140,8 @@ class TestRunBlock(unittest.TestCase):
         rc_md = subprocess.run([str(custom_bin), "--agents"], capture_output=True, text=True, env=env, check=False)
         self.assertEqual(rc_md.returncode, 0)
         self.assertIn("## Terminal blocks (`run_term_block`", rc_md.stdout)
-        self.assertIn("run_term_block s1/1 <<'RUN_BLOCK'", rc_md.stdout)
+        self.assertIn("run_term_block <<'RUN_BLOCK'", rc_md.stdout)
+        self.assertIn("run_term_block s1/2 <<'RUN_BLOCK'", rc_md.stdout)
     def test_start_autoincrement(self):
         s1 = self.mod.start_session()
         s2 = self.mod.start_session()
@@ -150,7 +153,7 @@ class TestRunBlock(unittest.TestCase):
         self.assertEqual(rc1, 0)
         out1 = (self.tmp / "s1/1.txt").read_text(encoding="utf-8")
         self.assertIn("hello_world in_rb=1", out1)
-        self.assertIn("[s1/1] END (exit 0)", out1)
+        self.assertIn("[s1/1] END — output:", out1)
 
         rc_dup = self.mod.cmd_normal("s1/1", "echo again\n")
         self.assertEqual(rc_dup, 2)
@@ -190,19 +193,19 @@ class TestRunBlock(unittest.TestCase):
         shutil.copy2(SCRIPT, installed)
         remote_file = self.tmp / "remote_run_block"
         cur_v = self.mod.VERSION
-        src = SCRIPT.read_text(encoding="utf-8").replace(f'VERSION = "{cur_v}"', 'VERSION = "0.6.0"', 1)
+        src = SCRIPT.read_text(encoding="utf-8").replace(f'VERSION = "{cur_v}"', 'VERSION = "9.9.9"', 1)
         remote_file.write_text(src, encoding="utf-8")
         url = remote_file.as_uri()
 
         env = {**os.environ, "RUN_BLOCK_UPDATE_URL": url}
         r_chk = subprocess.run([str(installed), "--check-update"], capture_output=True, text=True, env=env, check=False)
         self.assertEqual(r_chk.returncode, 0)
-        self.assertIn(f"{cur_v} -> 0.6.0", r_chk.stdout)
+        self.assertIn(f"{cur_v} -> 9.9.9", r_chk.stdout)
 
         r_up = subprocess.run([str(installed), "--update"], capture_output=True, text=True, env=env, check=False)
         self.assertEqual(r_up.returncode, 0)
-        self.assertIn(f"updated {cur_v} -> 0.6.0", r_up.stdout)
-        self.assertIn("## Terminal blocks (`my_block` v0.6.0)", r_up.stdout)
+        self.assertIn(f"updated {cur_v} -> 9.9.9", r_up.stdout)
+        self.assertIn("## Terminal blocks (`my_block` v9.9.9)", r_up.stdout)
 
     def test_install_sh_fresh_and_conflict(self):
         bin_dir = self.tmp / "bin"
@@ -218,7 +221,7 @@ class TestRunBlock(unittest.TestCase):
         )
         self.assertEqual(r1.returncode, 0, r1.stderr)
         self.assertTrue((bin_dir / "run_block").is_file())
-        self.assertIn("run_block s1/1 <<'RUN_BLOCK'", r1.stdout)
+        self.assertIn("run_block <<'RUN_BLOCK'", r1.stdout)
 
         (bin_dir / "run_block").write_text("#!/bin/sh\necho other_tool\n", encoding="utf-8")
         (bin_dir / "run_block").chmod(0o755)
@@ -231,7 +234,7 @@ class TestRunBlock(unittest.TestCase):
         )
         self.assertEqual(r2.returncode, 0, r2.stderr)
         self.assertTrue((bin_dir / "run_term_block").is_file())
-        self.assertIn("run_term_block s1/1 <<'RUN_BLOCK'", r2.stdout)
+        self.assertIn("run_term_block <<'RUN_BLOCK'", r2.stdout)
 
 
     def test_list_show_and_retry(self):
@@ -239,7 +242,7 @@ class TestRunBlock(unittest.TestCase):
         r_list = subprocess.run([str(SCRIPT), "--list"], capture_output=True, text=True, check=False)
         self.assertEqual(r_list.returncode, 0)
         self.assertIn("s1/1", r_list.stdout)
-        self.assertIn("END (exit 0)", r_list.stdout)
+        self.assertIn("END)", r_list.stdout)
 
         r_show = subprocess.run([str(SCRIPT), "--show", "s1/1"], capture_output=True, text=True, check=False)
         self.assertEqual(r_show.returncode, 0)
@@ -249,25 +252,78 @@ class TestRunBlock(unittest.TestCase):
         self.assertEqual(r_retry.returncode, 0)
         self.assertIn("first_step", r_retry.stdout)
 
-    def test_agent_install_create_and_update(self):
-        target = self.tmp / "AGENTS.md"
-        r1 = subprocess.run([str(SCRIPT), "--agents-install", str(target)], capture_output=True, text=True, check=False)
-        self.assertEqual(r1.returncode, 0)
-        self.assertTrue(target.is_file())
-        c1 = target.read_text(encoding="utf-8")
-        self.assertIn("<!-- run_block:start", c1)
-        self.assertIn("<!-- run_block:end -->", c1)
+    def test_implicit_first_block_and_start_bundle(self):
+        proj = self.tmp / "proj"
+        proj.mkdir()
+        (proj / "AGENTS.md").write_text("# My Project Rules\n", encoding="utf-8")
+        (proj / "EXTRA.md").write_text("Extra file body\n", encoding="utf-8")
+        (proj / ".run_block.start").write_text(
+            "# comment\nAGENTS.md\n$ run_block --agents\n$ echo custom_cmd_output\n",
+            encoding="utf-8",
+        )
+        env = {**os.environ, "RUN_BLOCK_DIR": str(self.tmp / "sessions"), "RUN_BLOCK_CWD": str(proj)}
 
-        # Simulate an older version inside existing AGENTS.md with surrounding user content
-        older = "# Project Rules\n\n" + c1.replace(f"v{self.mod.VERSION}", "v0.1.0") + "\n## Other Section\nKeep me.\n"
-        target.write_text(older, encoding="utf-8")
-        r2 = subprocess.run([str(SCRIPT), "--agents-install", str(target)], capture_output=True, text=True, check=False)
-        self.assertEqual(r2.returncode, 0)
-        c2 = target.read_text(encoding="utf-8")
-        self.assertIn(f"v{self.mod.VERSION}", c2)
-        self.assertNotIn("v0.1.0", c2)
-        self.assertIn("# Project Rules", c2)
-        self.assertIn("## Other Section\nKeep me.", c2)
+        # 1. Calling run_block with no args and script on stdin creates s1/1 automatically
+        r_first = subprocess.run(
+            [str(SCRIPT)],
+            input="echo implicit_s1_step1\n",
+            capture_output=True,
+            text=True,
+            cwd=str(proj),
+            env=env,
+            check=False,
+        )
+        self.assertEqual(r_first.returncode, 0, r_first.stderr)
+        self.assertIn("[s1/1] START", r_first.stdout)
+        self.assertIn("implicit_s1_step1", r_first.stdout)
+        self.assertTrue((self.tmp / "sessions/s1/1.txt").is_file())
+
+        # 2. Calling run_block --start creates s2/0.txt from .run_block.start + extra file + prompt
+        r_start = subprocess.run(
+            [str(SCRIPT), "--start", "EXTRA.md", "-p", "Work on task F1"],
+            capture_output=True,
+            text=True,
+            cwd=str(proj),
+            env=env,
+            check=False,
+        )
+        self.assertEqual(r_start.returncode, 0, r_start.stderr)
+        self.assertIn("Session: s2", r_start.stdout)
+        self.assertIn("Next block: s2/1", r_start.stdout)
+        bundle = (self.tmp / "sessions/s2/0.txt").read_text(encoding="utf-8")
+        self.assertIn("===== File: AGENTS.md =====", bundle)
+        self.assertIn("# My Project Rules", bundle)
+        self.assertIn("===== $ run_block --agents =====", bundle)
+        self.assertIn("custom_cmd_output", bundle)
+        self.assertIn("===== File: EXTRA.md =====", bundle)
+        self.assertIn("===== Prompt =====", bundle)
+        self.assertIn("Work on task F1", bundle)
+
+        # 3. Calling run_block with no args right after --start reuses s2 (since s2 only has 0.txt) and runs s2/1
+        r_reuse = subprocess.run(
+            [str(SCRIPT)],
+            input="echo reused_s2_step1\n",
+            capture_output=True,
+            text=True,
+            cwd=str(proj),
+            env=env,
+            check=False,
+        )
+        self.assertEqual(r_reuse.returncode, 0, r_reuse.stderr)
+        self.assertIn("[s2/1] START", r_reuse.stdout)
+        self.assertIn("reused_s2_step1", r_reuse.stdout)
+
+        # 4. --show s2/0 displays the bundle
+        r_show0 = subprocess.run(
+            [str(SCRIPT), "--show", "s2/0"],
+            capture_output=True,
+            text=True,
+            cwd=str(proj),
+            env=env,
+            check=False,
+        )
+        self.assertEqual(r_show0.returncode, 0)
+        self.assertIn("Bundle:", r_show0.stdout)
 
 if __name__ == "__main__":
     unittest.main()

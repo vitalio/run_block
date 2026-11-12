@@ -74,7 +74,7 @@ if ($UserPath -notlike "*$Dir*") {
 Write-Host '============================================================'
 python $PyTarget --version
 Write-Host "Installed to: $Dir ($Name)"
-Write-Host "Tip: run '$Name --agents-install' in any repo to add/update AGENTS.md automatically."
+Write-Host "Tip: run '$Name --init-start' and '$Name --start' in any repo to build a session context bundle."
 Write-Host '============================================================'
 Write-Host ''
 Write-Host 'Below are the Markdown instructions for your AI model (for AGENTS.md / CLAUDE.md):'
