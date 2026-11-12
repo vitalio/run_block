@@ -1,57 +1,21 @@
 #!/usr/bin/env python3
 # run_block-repo: vitalio/run_block
 """Usage:
-  {prog} [<session>/<step>]          Run a Bash block from stdin (omit ref on first block to start a session)
+  {prog} [<session>/<step>]          Run Bash block from stdin (omit ref on first block to auto-init <session>/1)
   {prog} --fix <session>/<target>    Patch <target>.sh via Python on stdin and run as <target>_N
-  {prog} --retry [session/step]      Re-run the last block (or a specific block, e.g. after aborting)
-  {prog} --list | -l [session]       List sessions or steps in a session with their status
-  {prog} --show [session/step]       Show saved script and output of the last (or specified) block
-  {prog} --start [options] [FILE ..] Build session context bundle ({base_dir}/<session>/0.txt) from .run_block.start
-  {prog} --init-start [--force]      Create a starter .run_block.start file in the current directory
+  {prog} --retry [session/step]      Re-run the last (or specified) block
+  {prog} --list | -l [session]       List sessions or blocks in a session
+  {prog} --show [session/step]       Show script and output of a block (or <session>/0 bundle)
+  {prog} --start [opts] [FILE ...]   Build session bundle ({base_dir}/<session>/0.txt) from .run_block.start
+                                     Opts: --session NAME, -p/--prompt TEXT, --force
+  {prog} --init-start [--force]      Create a starter .run_block.start in the current directory
   {prog} --agents                    Print Markdown instructions for AI agents
-  {prog} --config                    Show active configuration and config file path
-  {prog} --init-config [--force]     Create a commented default config file at {config_path}
+  {prog} --config                    Show active configuration ({config_path})
+  {prog} --init-config [--force]     Create default config file at {config_path}
   {prog} --update [--force]          Self-update {prog} from GitHub (vitalio/run_block)
-  {prog} --check-update              Check if a newer version is available on GitHub
+  {prog} --check-update              Check if a newer version is available
   {prog} -V | --version              Print version and exit 0
   {prog} -h | --help                 Print this usage and exit 0
-
-Options for --start:
-  --session NAME           Explicit session name in {base_dir}/ (default: s1, s2, ...)
-  -p, --prompt TEXT        Append an explicit task/prompt section at the end of 0.txt
-  --force                  Overwrite existing session directory without prompting
-  FILE ...                 Additional repository files to include in 0.txt
-
-Reads a Bash script (or Python patch in --fix mode) from stdin, saves it under
-{base_dir}/<session>/, checks syntax with bash -n, displays a detailed BLOCK PLAN
-(highlighting any safety warnings) and asks for confirmation before running,
-executes it from the current Git repository root (or current directory), and
-streams stdout+stderr to both the terminal and {base_dir}/<session>/<step>.txt.
-
-When invoked with no arguments and a script on stdin, automatically initializes
-a new session (or reuses a session just prepared by --start) and runs step 1.
-Step 0 (0.txt) is reserved for the session start context bundle.
-Refuses to overwrite an already-used step or skip a sequential step number.
-At the end of execution, press Enter to copy the output to your clipboard or Esc to skip.
-
-Configuration file ({config_path}):
-  base_dir = /tmp/{prog}             Session and log directory
-  work_dir = auto                    Working directory: auto (Git root or $PWD), cwd, or path
-  clipboard = prompt                 After execution: prompt | auto | never
-  token_stats = true                 Show size & Claude/GPT/Gemini token counts: true | false
-  shell = bash                       Shell executable used for syntax check and execution
-  editor = auto                      Terminal editor/viewer for 'v' in BLOCK PLAN (auto, nano, vim, less, ...)
-
-Environment variables (override config file):
-  RUN_BLOCK_CONFIG         Path to config file (default: {config_path})
-  RUN_BLOCK_DIR            Override base_dir (default: {base_dir})
-  RUN_BLOCK_CWD            Override work_dir for executed blocks
-  RUN_BLOCK_CLIPBOARD      Override clipboard mode: prompt | auto | never
-  RUN_BLOCK_NO_CLIPBOARD=1 Alias for RUN_BLOCK_CLIPBOARD=never
-  RUN_BLOCK_TOKEN_STATS    Override token_stats: 1/true or 0/false
-  RUN_BLOCK_SHELL          Override shell executable (default: bash)
-  RUN_BLOCK_EDITOR         Override terminal editor/viewer for BLOCK PLAN (default: auto)
-  RUN_BLOCK_UPDATE_URL     Override raw script URL for --update / --check-update
 """
 from __future__ import annotations
 
