@@ -1403,10 +1403,7 @@ def cmd_update(force: bool = False, url: str | None = None, target_path: Path | 
     except Exception as exc:
         sys.stderr.write(f"{prog}: could not write updated binary to {dest}: {exc}\n")
         return 1
-    sys.stdout.write(f"{prog}: updated {VERSION} -> {remote_ver} ({dest})\n\n")
-    sys.stdout.write(f"=== Updated AI Agent Instructions ({prog} v{remote_ver}) ===\n\n")
-    sys.stdout.flush()
-    subprocess.run([str(dest), "--agents"], check=False)
+    sys.stdout.write(f"{prog}: updated {VERSION} -> {remote_ver} ({dest})\n")
     return 0
 
 

@@ -4,7 +4,7 @@
 # Installs or updates run_block (https://github.com/vitalio/run_block).
 # Checks for command name conflicts in PATH, offers an alternative name if
 # 'run_block' is already taken by another program, installs into ~/.local/bin
-# (or --dir), and prints the AI agent instructions at the end.
+# (or --dir).
 # -h / --help prints this usage and exits 0 doing nothing.
 set -eu
 
@@ -139,7 +139,3 @@ case ":${PATH:-}:" in
 esac
 echo "Tip: run '$CMD_NAME --init-start' and '$CMD_NAME --start' in any repo to build a session context bundle."
 echo "============================================================"
-echo ""
-echo "Below are the Markdown instructions for your AI model (for AGENTS.md / CLAUDE.md):"
-echo ""
-"$TARGET" --agents

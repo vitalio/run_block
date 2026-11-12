@@ -205,7 +205,6 @@ class TestRunBlock(unittest.TestCase):
         r_up = subprocess.run([str(installed), "--update"], capture_output=True, text=True, env=env, check=False)
         self.assertEqual(r_up.returncode, 0)
         self.assertIn(f"updated {cur_v} -> 9.9.9", r_up.stdout)
-        self.assertIn("## Terminal blocks (`my_block` v9.9.9)", r_up.stdout)
 
     def test_install_sh_fresh_and_conflict(self):
         bin_dir = self.tmp / "bin"
@@ -221,7 +220,7 @@ class TestRunBlock(unittest.TestCase):
         )
         self.assertEqual(r1.returncode, 0, r1.stderr)
         self.assertTrue((bin_dir / "run_block").is_file())
-        self.assertIn("run_block <<'RUN_BLOCK'", r1.stdout)
+        self.assertIn("Installed: run_block", r1.stdout)
 
         (bin_dir / "run_block").write_text("#!/bin/sh\necho other_tool\n", encoding="utf-8")
         (bin_dir / "run_block").chmod(0o755)
@@ -234,7 +233,7 @@ class TestRunBlock(unittest.TestCase):
         )
         self.assertEqual(r2.returncode, 0, r2.stderr)
         self.assertTrue((bin_dir / "run_term_block").is_file())
-        self.assertIn("run_term_block <<'RUN_BLOCK'", r2.stdout)
+        self.assertIn("Installed: run_term_block", r2.stdout)
 
 
     def test_list_show_and_retry(self):
