@@ -7,7 +7,7 @@
   {prog} --list | -l [session]       List sessions or blocks in a session
   {prog} --show [session/step]       Show script and output of a block (or <session>/0 bundle)
   {prog} --start [opts] [FILE ...]   Build session bundle ({base_dir}/<session>/0.txt) from .run_block.start
-                                     Opts: --session NAME, -p/--prompt TEXT, --force
+                                        Opts: --session NAME, -p/--prompt TEXT, --force
   {prog} --init-start [--force]      Create a starter .run_block.start in the current directory
   {prog} --agents                    Print Markdown instructions for AI agents
   {prog} --config                    Show active configuration ({config_path})
