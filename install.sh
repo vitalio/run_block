@@ -150,7 +150,7 @@ case ":${PATH:-}:" in
                 ;;
         esac
         EXPORT_LINE="export PATH=\"$INSTALL_DIR:\$PATH\""
-        if [ -n "$RC_FILE" ] && [ "${INSTALL_DIR#"$HOME"}" != "$INSTALL_DIR" ]; then
+        if [ -n "$RC_FILE" ] && [ "$INSTALL_DIR" = "$HOME/.local/bin" ]; then
             if [ ! -f "$RC_FILE" ] || ! grep -Fq "$INSTALL_DIR" "$RC_FILE" 2>/dev/null; then
                 printf '\n# Added by %s installer\n%s\n' "$CMD_NAME" "$EXPORT_LINE" >> "$RC_FILE"
                 echo "Added $INSTALL_DIR to PATH in $RC_FILE (run 'source $RC_FILE' or open a new terminal)."
