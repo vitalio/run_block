@@ -671,35 +671,39 @@ def flush_tty_input(tty_r) -> None:
             pass
 
 
-def read_enter_or_esc(tty_r) -> bool:
-    """Wait for a single key: Enter returns True (copy), Esc returns False (skip)."""
+def read_clipboard_key(tty_r) -> str:
+    """Wait for a single key: returns 'copy', 'skip', or 'view'."""
     flush_tty_input(tty_r)
     if not HAS_PTY or termios is None or tty is None:
         ans = tty_r.readline().strip().lower()
-        return ans not in ("n", "no", "esc", "\x1b")
+        if ans in ("v", "view", "e", "edit"):
+            return "view"
+        return "skip" if ans in ("n", "no", "esc", "\x1b") else "copy"
     fd = tty_r.fileno()
     try:
         old_attrs = termios.tcgetattr(fd)
     except Exception:
         ans = tty_r.readline().strip().lower()
-        return ans not in ("n", "no", "esc", "\x1b")
+        return "view" if ans in ("v", "view", "e", "edit") else ("skip" if ans in ("n", "no", "esc", "\x1b") else "copy")
     try:
         tty.setraw(fd, termios.TCSANOW)
         while True:
             ch = os.read(fd, 1)
             if not ch:
-                return False
+                return "skip"
+            if ch in (b"v", b"V", b"e", b"E"):
+                return "view"
             if ch in (b"\r", b"\n", b"y", b"Y"):
-                return True
+                return "copy"
             if ch in (b"n", b"N", b"q", b"Q", b"\x03", b"\x04"):
-                return False
+                return "skip"
             if ch == b"\x1b":
                 # Distinguish standalone Esc from multi-byte escape sequences (like arrow keys)
                 rlist, _, _ = select.select([fd], [], [], 0.05)
                 if rlist:
                     os.read(fd, 32)
                     continue
-                return False
+                return "skip"
     finally:
         try:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
@@ -1257,7 +1261,7 @@ def format_clipboard_box(
     else:
         state = "END"
     title = f" [{label}] {state} "
-    line2 = f"-> Press Enter to copy {out_path} to clipboard (Esc to skip) "
+    line2 = f"-> Press Enter to copy {out_path} to clipboard (v to view, Esc to skip) "
     copied_line = f"✓ Copied {out_path} to clipboard."
     stats_width = display_width(stats) if stats else 0
     inner_width = max(
@@ -1304,18 +1308,28 @@ def offer_clipboard_copy(
         label, out_path, ok=ok, rc=rc, stats=stats_line(out_path)
     )
     bottom = f"└─{'─' * inner_width}─┘"
+    line2 = f"-> Press Enter to copy {out_path} to clipboard (v to view, Esc to skip) "
     try:
         tty_w, tty_r = open_tty()
         with tty_w, tty_r:
             tty_w.write(f"\n{box}\r\033[1A\033[{cursor_offset}C")
             tty_w.flush()
-            if read_enter_or_esc(tty_r):
-                if copy_file_to_clipboard(cmd, out_path):
-                    status_line = f"✓ Copied {out_path} to clipboard."
+            while True:
+                action = read_clipboard_key(tty_r)
+                if action == "view":
+                    if out_path.is_file():
+                        open_script_in_editor(out_path, tty_r, tty_w)
+                        tty_w.write(f"\r{pad_box_line(line2, inner_width)}\n{bottom}\r\033[1A\033[{cursor_offset}C")
+                        tty_w.flush()
+                    continue
+                if action == "copy":
+                    if copy_file_to_clipboard(cmd, out_path):
+                        status_line = f"✓ Copied {out_path} to clipboard."
+                    else:
+                        status_line = f"✗ Clipboard copy failed; run: {cmd_str}"
                 else:
-                    status_line = f"✗ Clipboard copy failed; run: {cmd_str}"
-            else:
-                status_line = "Skipped clipboard copy."
+                    status_line = "Skipped clipboard copy."
+                break
             tty_w.write(f"\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
             tty_w.flush()
     except OSError:
