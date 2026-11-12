@@ -790,9 +790,6 @@ def format_safety_box(
     return box, inner_width, cursor_col_offset
 
 
-GUI_EDITORS = {"gvim", "mvim", "code", "code-insiders", "subl", "gedit", "kate", "mousepad", "xed"}
-
-
 def resolve_editor_command() -> list[str]:
     cfg_ed, _ = get_setting("editor")
     if cfg_ed and cfg_ed.lower() != "auto":
@@ -800,10 +797,8 @@ def resolve_editor_command() -> list[str]:
     for env_k in ("VISUAL", "EDITOR"):
         val = os.environ.get(env_k, "").strip()
         if val:
-            parts = shlex.split(val)
-            if parts and Path(parts[0]).name.lower() not in GUI_EDITORS:
-                return parts
-    for candidate in ("nano", "vim", "less", "vi", "more"):
+            return shlex.split(val)
+    for candidate in ("vim", "vi", "less", "nano", "more"):
         if shutil.which(candidate):
             return [candidate]
     return ["vi"]
