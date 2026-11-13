@@ -8,10 +8,9 @@ Task heading format: `### <emoji> [<STATUS>] <ID>: <title>`
 
 ## Resume
 
-Written 2026-11-13. Released `run_block` `v0.6.3` (`931ad4b`) and decoupled documentation from `todo_md`:
-- Redesigned `run_block --agents` with immediate `<cmd> s1/1 <<'RUN_BLOCK'` template, command batching guidance, and strict fence/heredoc protection.
-- Added interactive confirmation (`prompt_yes_no_box`) for skipped previous steps (`[!] MISSING PREVIOUS STEP`), existing steps, and existing sessions, plus `format_info_box` for `run_block --start`.
-- Slimmed `AGENTS.md` to non-computable engineering & release rules and removed cross-references to `todo_md` from `README.md`.
+Written 2026-11-13. Released `run_block` `v0.6.4`:
+- Removed all references to `TODO.md` from `run_block` (`default_start_template`, `build_start_bundle`) and `README.md` so `run_block` has zero knowledge of task files.
+- Redesigned `run_block --agents` (`v0.6.3`), added interactive box confirmations (`prompt_yes_no_box`) for skipped steps / existing steps / existing sessions, and framed `--start` output (`format_info_box`).
 - Next in queue: `F1` (PowerShell execution mode on Windows), `F2` (custom safety rules in config), `F3` (`--clean` session pruning); deferred: `F4` (`--tree` smart repo map).
 
 ## Tasks

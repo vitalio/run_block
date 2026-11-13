@@ -34,8 +34,6 @@ $ run_block --agents
 
 AGENTS.md
 
-TODO.md
-
 $ git status -sb
 $ git branch -vv
 $ git log --oneline -10

@@ -51,7 +51,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.6.3"
+VERSION = "0.6.4"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 START_FILE_NAME = ".run_block.start"
@@ -1653,7 +1653,6 @@ def default_start_template(prog: str | None = None) -> str:
         f"$ {cmd} --agents",
         "",
         "AGENTS.md",
-        "TODO.md",
         "",
         "$ git status -sb",
         "$ git branch -vv",
@@ -1769,9 +1768,8 @@ def build_start_bundle(
     else:
         spec_source = "built-in defaults"
         entries = [("cmd", f"{prog} --agents")]
-        for default_f in ("AGENTS.md", "TODO.md"):
-            if (spec_dir / default_f).is_file():
-                entries.append(("file", default_f))
+        if (spec_dir / "AGENTS.md").is_file():
+            entries.append(("file", "AGENTS.md"))
         if (spec_dir / ".git").exists():
             entries.append(("cmd", "git status -sb"))
 
