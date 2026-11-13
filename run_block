@@ -12,6 +12,7 @@
                                         Opts: --session NAME, -p/--prompt TEXT, --force
   {prog} --init-start [--force]      Create a starter .run_block.start in the current directory
   {prog} --agents                    Print Markdown instructions for AI agents
+  {prog} --rules [TOPIC ...|--list]  Print reusable engineering rules (workflow, semver, python-cli, all)
   {prog} --config                    Show active configuration ({config_path})
   {prog} --init-config [--force]     Create default config file at {config_path}
   {prog} --update [--force]          Self-update {prog} from GitHub (vitalio/run_block)
@@ -53,7 +54,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 START_FILE_NAME = ".run_block.start"
@@ -404,6 +405,131 @@ def agents_markdown(prog: str | None = None) -> str:
         "If the failed run already partially changed state and is not idempotent, use the next sequential step (`s1/2`) instead of `--fix`.",
     ])
     return "\n".join(lines)
+
+BUILTIN_RULES: dict[str, tuple[str, list[str]]] = {
+    "workflow": (
+        "Core agent workflow (Start -> Investigate -> Plan -> Edit -> Test -> Commit -> End)",
+        [
+            "### Workflow: Start → Investigate → Plan → Edit → Test → Commit → End",
+            "",
+            "- **Start:** Uncommitted changes or in-flight work take precedence over new tasks — ask what to do first. Format dates in chat as `DD/MM/YYYY`, and in files/commits/logs as ISO `YYYY-MM-DD`.",
+            "- **Investigate:** Read code rather than guessing; say \"not known\" rather than filling gaps.",
+            "- **Plan:** Before non-trivial edits, state a high-level plan (target outcome, rules, and behavior — not a line-by-line diff dump) and write code once agreed.",
+            "- **Edit:** Write file edits in Python asserting each anchor occurs once (`assert text.count(old) == 1`) before writing. Avoid multiline triple-quoted strings when `\"\\n\".join([...])` is cleaner. Update `README.md` and `-h`/`--help` usage whenever CLI behavior or config options change.",
+            "- **Test & self-review diff:** Run project pre-commit checks and inspect `git diff HEAD` for dead code, regressions, and docs sync before committing (trivial 1–2 line edits may edit, test, and commit in one block).",
+            "- **Commit:** Never run `git push --force`, `git reset --hard`, or delete branches/tags without explicit user approval.",
+            "- **End:** On \"end session\" (or task completion), give a concise summary of completed work (with commit SHAs) and report any uncommitted/unpushed changes.",
+        ],
+    ),
+    "semver": (
+        "Semantic Versioning and release tagging rules (PATCH / MINOR / MAJOR)",
+        [
+            "### Versioning & Releases (SemVer)",
+            "",
+            "- **Bump rules:**",
+            "  - `PATCH` (`0.Y.Z+1`) — bugfixes, UI/box tweaks, and `--agents`/`--rules`/`--help`/docs updates.",
+            "  - `MINOR` (`0.Y+1.0`) — new CLI commands/flags or config options.",
+            "  - `MAJOR` (`X+1.0.0`) — breaking changes or only when explicitly requested.",
+            "- **Release steps:** Keep `VERSION` and in-code `VERSION = \"...\"` in sync, reinstall locally if applicable, commit, push to `origin main`, and push an annotated release tag (`git tag -a vX.Y.Z -m \"Release vX.Y.Z\" && git push origin vX.Y.Z`).",
+        ],
+    ),
+    "python-cli": (
+        "Zero-dependency Python 3 CLI engineering invariants",
+        [
+            "### Python CLI Engineering Invariants",
+            "",
+            "- **Zero external dependencies:** Use only the Python 3 standard library (`from __future__ import annotations` at top of Python files for macOS system Python 3.9 compatibility).",
+            "- **Single responsibility & clean CLI:** Every flag/command must be documented in `-h`/`--help` (which exits `0` doing nothing) and covered by unit tests.",
+        ],
+    ),
+}
+
+
+def rules_dir_path() -> Path:
+    env_dir = os.environ.get("RUN_BLOCK_RULES_DIR")
+    if env_dir:
+        return Path(env_dir).expanduser()
+    return config_file_path().parent / "rules"
+
+
+def _discover_user_rules() -> dict[str, Path]:
+    rdir = rules_dir_path()
+    if not rdir.is_dir():
+        return {}
+    out: dict[str, Path] = {}
+    try:
+        for p in sorted(rdir.glob("*.md")):
+            if p.is_file():
+                out[p.stem.lower()] = p
+    except OSError:
+        pass
+    return out
+
+
+def rules_markdown(topics: list[str] | None = None) -> str:
+    prog = prog_name()
+    user_rules = _discover_user_rules()
+    raw_topics = [t.strip().lower() for t in (topics or []) if t.strip()]
+    if not raw_topics:
+        raw_topics = ["workflow"]
+
+    expanded: list[str] = []
+    for t in raw_topics:
+        if t == "all":
+            for k in BUILTIN_RULES:
+                if k not in expanded:
+                    expanded.append(k)
+            for k in user_rules:
+                if k not in expanded:
+                    expanded.append(k)
+        else:
+            if t not in expanded:
+                expanded.append(t)
+
+    blocks: list[str] = []
+    for t in expanded:
+        if t in user_rules:
+            body = user_rules[t].read_text(encoding="utf-8", errors="replace").strip()
+            if body:
+                blocks.append(body)
+        elif t in BUILTIN_RULES:
+            blocks.append("\n".join(BUILTIN_RULES[t][1]))
+        else:
+            avail = sorted(set(BUILTIN_RULES.keys()) | set(user_rules.keys())) + ["all"]
+            raise SystemExit(
+                f"{prog}: unknown rule topic {t!r} (available: {', '.join(avail)})"
+            )
+
+    hdr = f"## Agent Engineering Rules ({', '.join(expanded)})"
+    return hdr + "\n\n" + "\n\n".join(blocks)
+
+
+def cmd_rules(argv: list[str]) -> int:
+    prog = prog_name()
+    if any(a in ("--list", "-l") for a in argv):
+        if len(argv) > 1:
+            raise SystemExit(f"{prog}: usage: {prog} --rules [TOPIC ... | all | --list]")
+        user_rules = _discover_user_rules()
+        rdir = rules_dir_path()
+        sys.stdout.write("Built-in rule topics:\n")
+        for k, (desc, _) in BUILTIN_RULES.items():
+            override = " (overridden by user file)" if k in user_rules else ""
+            sys.stdout.write(f"  {k:<12}  {desc}{override}\n")
+        sys.stdout.write("  all           Include all built-in and custom rule topics\n")
+        custom_only = {k: p for k, p in user_rules.items() if k not in BUILTIN_RULES}
+        sys.stdout.write(f"\nCustom rule files ({rdir}):\n")
+        if custom_only:
+            for k, p in custom_only.items():
+                sys.stdout.write(f"  {k:<12}  {p}\n")
+        else:
+            sys.stdout.write("  (none — add <topic>.md files to this directory to define custom rules)\n")
+        return 0
+    for a in argv:
+        if a.startswith("-"):
+            raise SystemExit(f"{prog}: usage: {prog} --rules [TOPIC ... | all | --list]")
+    sys.stdout.write(rules_markdown(argv) + "\n")
+    return 0
+
 
 def _git_toplevel_or_cwd() -> Path:
     try:
@@ -1845,6 +1971,7 @@ def default_start_template(prog: str | None = None) -> str:
         "# Lines starting with '$ ' (or '! ') are shell commands executed in the project directory.",
         "",
         f"$ {cmd} --agents",
+        f"$ {cmd} --rules",
         "",
         "AGENTS.md",
         "",
@@ -1926,6 +2053,16 @@ def _run_start_command(cmd_str: str, cwd: Path) -> tuple[int, str]:
     # If the command invokes '<prog> --agents' directly, call our own agents_markdown() in-process
     if re.fullmatch(rf"{re.escape(prog)}\s+--agents(?:-md)?", cmd_str) or re.fullmatch(r"run_block\s+--agents(?:-md)?", cmd_str):
         return 0, agents_markdown(prog)
+    if re.match(rf"^(?:{re.escape(prog)}|run_block)\s+--rules(?:\s+.*)?$", cmd_str):
+        try:
+            parts = shlex.split(cmd_str)[2:]
+            buf = []
+            if any(a in ("--list", "-l") for a in parts):
+                pass
+            else:
+                return 0, rules_markdown(parts).rstrip()
+        except SystemExit as exc:
+            return 1, str(exc)
     if re.match(rf"^(?:{re.escape(prog)}|run_block)\s+--tree(?:\s+.*)?$", cmd_str):
         try:
             parts = shlex.split(cmd_str)[2:]
@@ -2535,6 +2672,8 @@ def main(argv: list[str] | None = None) -> int:
     if "--agents" in args or "--agents-md" in args:
         sys.stdout.write(agents_markdown(prog) + "\n")
         return 0
+    if args and args[0] == "--rules":
+        return cmd_rules(args[1:])
     if not args:
         if not sys.stdin.isatty():
             session = resolve_initial_session(ensure_base())
@@ -2585,7 +2724,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if len(args) != 1 or args[0].startswith("-"):
         raise SystemExit(
-            f"{prog}: usage: {prog} [<session>/<step>] (or --fix / --retry / --list / --show / --clean / --tree / --start / --init-start / --config / --agents / --update / --version / --help)"
+            f"{prog}: usage: {prog} [<session>/<step>] (or --fix / --retry / --list / --show / --clean / --tree / --start / --init-start / --config / --agents / --rules / --update / --version / --help)"
         )
     return cmd_normal(args[0], sys.stdin.read())
 

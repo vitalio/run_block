@@ -44,6 +44,7 @@ class TestRunBlock(unittest.TestCase):
                 "RUN_BLOCK_SHELL",
                 "RUN_BLOCK_SAFETY_DISABLE",
                 "RUN_BLOCK_SAFETY_RULES",
+                "RUN_BLOCK_RULES_DIR",
             )
         }
         os.environ["RUN_BLOCK_NO_CLIPBOARD"] = "1"
@@ -514,6 +515,40 @@ class TestRunBlock(unittest.TestCase):
         res = self.mod.build_start_bundle("s1", work_dir=repo)
         self.assertIn("===== $ run_block --tree --max-lines 10 =====", str(res["full"]))
         self.assertIn("deep/ (25 files, 75L)", str(res["full"]))
+
+    def test_rules_builtin_and_custom_and_start_bundle(self):
+        # Default topic (workflow)
+        md_def = self.mod.rules_markdown()
+        self.assertIn("## Agent Engineering Rules (workflow)", md_def)
+        self.assertIn("Workflow: Start → Investigate → Plan → Edit → Test → Commit → End", md_def)
+
+        # Multiple topics + custom rule in RUN_BLOCK_RULES_DIR
+        rdir = self.tmp / "custom_rules"
+        rdir.mkdir()
+        (rdir / "security.md").write_text("### Custom Security Rule\n\n- Never hardcode secrets.\n", encoding="utf-8")
+        os.environ["RUN_BLOCK_RULES_DIR"] = str(rdir)
+        try:
+            md_all = self.mod.rules_markdown(["all"])
+            self.assertIn("workflow, semver, python-cli, security", md_all)
+            self.assertIn("### Versioning & Releases (SemVer)", md_all)
+            self.assertIn("### Python CLI Engineering Invariants", md_all)
+            self.assertIn("### Custom Security Rule", md_all)
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc_list = self.mod.cmd_rules(["--list"])
+            self.assertEqual(rc_list, 0)
+            self.assertIn("Built-in rule topics:", buf.getvalue())
+            self.assertIn("security", buf.getvalue())
+
+            proj = self.tmp / "rules_proj"
+            proj.mkdir()
+            (proj / ".run_block.start").write_text("$ run_block --rules workflow security\n", encoding="utf-8")
+            res = self.mod.build_start_bundle("s1", work_dir=proj)
+            self.assertIn("===== $ run_block --rules workflow security =====", str(res["full"]))
+            self.assertIn("### Custom Security Rule", str(res["full"]))
+        finally:
+            os.environ.pop("RUN_BLOCK_RULES_DIR", None)
 
 if __name__ == "__main__":
     unittest.main()
