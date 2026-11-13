@@ -350,12 +350,12 @@ class TestRunBlock(unittest.TestCase):
         self.assertEqual(r_show0.returncode, 0)
         self.assertIn("Bundle:", r_show0.stdout)
 
-    def test_subdir_start_spec_sets_workdir_for_start_and_blocks(self):
+    def test_start_ignores_subdir_spec_and_includes_default_rules(self):
         outer = self.tmp / "outer_repo"
         sub = outer / "my_subproject"
         sub.mkdir(parents=True)
         (sub / "AGENTS.md").write_text("# Subproject rules\n", encoding="utf-8")
-        (sub / ".run_block.start").write_text("$ run_block --agents\nAGENTS.md\n$ pwd\n", encoding="utf-8")
+        (sub / ".run_block.start").write_text("$ run_block --agents\nAGENTS.md\n", encoding="utf-8")
         env = {**os.environ, "RUN_BLOCK_DIR": str(self.tmp / "sub_sessions"), "RUN_BLOCK_CWD": str(outer)}
         r_start = subprocess.run(
             [str(SCRIPT), "--start"],
@@ -366,22 +366,13 @@ class TestRunBlock(unittest.TestCase):
             check=False,
         )
         self.assertEqual(r_start.returncode, 0, r_start.stderr)
-        self.assertIn(f"Workdir: {sub.resolve()}", r_start.stdout)
+        self.assertIn(f"Workdir: {outer.resolve()}", r_start.stdout)
+        self.assertIn("Spec: built-in defaults", r_start.stdout)
         bundle = (self.tmp / "sub_sessions/s1/0.txt").read_text(encoding="utf-8")
-        self.assertIn("# Subproject rules", bundle)
-        self.assertIn(f"Workdir: {sub.resolve()}", bundle)
-
-        r_blk = subprocess.run(
-            [str(SCRIPT), "s1/1"],
-            input="pwd\n",
-            capture_output=True,
-            text=True,
-            cwd=str(outer),
-            env={**env, "RUN_BLOCK_CWD": "auto"},
-            check=False,
-        )
-        self.assertEqual(r_blk.returncode, 0, r_blk.stderr)
-        self.assertIn(str(sub.resolve()), r_blk.stdout)
+        self.assertNotIn("# Subproject rules", bundle)
+        self.assertIn("===== $ run_block --agents =====", bundle)
+        self.assertIn("===== $ run_block --rules =====", bundle)
+        self.assertIn("## Agent Engineering Rules (workflow)", bundle)
 
 
     def test_info_and_prompt_boxes_and_skipped_step_confirmation(self):

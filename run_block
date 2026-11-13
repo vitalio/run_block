@@ -54,7 +54,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 START_FILE_NAME = ".run_block.start"
@@ -2011,21 +2011,6 @@ def find_start_file(work_dir: Path) -> tuple[Path | None, Path]:
     wdir_candidate = wdir / START_FILE_NAME
     if wdir_candidate.is_file():
         return wdir_candidate, wdir
-    seen_bases: list[Path] = []
-    for base in (cwd, wdir):
-        if base in seen_bases:
-            continue
-        seen_bases.append(base)
-        try:
-            sub_matches = sorted(
-                p / START_FILE_NAME
-                for p in base.iterdir()
-                if p.is_dir() and not p.name.startswith(".") and (p / START_FILE_NAME).is_file()
-            )
-            if len(sub_matches) == 1:
-                return sub_matches[0], sub_matches[0].parent
-        except OSError:
-            pass
     return None, wdir
 
 
@@ -2104,7 +2089,10 @@ def build_start_bundle(
         spec_source = str(start_file)
     else:
         spec_source = "built-in defaults"
-        entries = [("cmd", f"{prog} --agents")]
+        entries = [
+            ("cmd", f"{prog} --agents"),
+            ("cmd", f"{prog} --rules"),
+        ]
         if (spec_dir / "AGENTS.md").is_file():
             entries.append(("file", "AGENTS.md"))
         if (spec_dir / ".git").exists():
