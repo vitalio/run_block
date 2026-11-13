@@ -8,9 +8,9 @@ Task heading format: `### <emoji> [<STATUS>] <ID>: <title>`
 
 ## Resume
 
-Written 2026-11-13. Released `run_block` `v0.6.4`:
-- Removed all references to `TODO.md` from `run_block` (`default_start_template`, `build_start_bundle`) and `README.md` so `run_block` has zero knowledge of task files.
-- Redesigned `run_block --agents` (`v0.6.3`), added interactive box confirmations (`prompt_yes_no_box`) for skipped steps / existing steps / existing sessions, and framed `--start` output (`format_info_box`).
+Written 2026-11-13. Released `run_block` `v0.6.5`:
+- Framed all block-execution status messages in the terminal (`START`, `SYNTAX ERROR`, `NOT RUN`, and non-interactive `END`) using `format_info_box` while keeping `<step>.txt` output files plain and token-efficient (`[session/step] START` / `END`).
+- Removed all references to `TODO.md` from `run_block` (`v0.6.4`), redesigned `run_block --agents` (`v0.6.3`), and added interactive box confirmations (`prompt_yes_no_box`) for skipped previous steps, existing steps, and existing sessions.
 - Next in queue: `F1` (PowerShell execution mode on Windows), `F2` (custom safety rules in config), `F3` (`--clean` session pruning); deferred: `F4` (`--tree` smart repo map).
 
 ## Tasks
