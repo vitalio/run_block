@@ -22,3 +22,7 @@ Add `run_block --clean [--keep N | --all]` to prune old session directories in
 ### ✅ [DONE] F4: Smart budget-aware repository map (--tree) — *15f24a8*
 
 Add `run_block --tree` (usable in `.run_block.start` as `$ run_block --tree`) to generate a compact, token-budgeted repository file tree (respecting `.gitignore`, showing line counts for source files, and collapsing large directories into summaries instead of dumping thousands of paths).
+
+### ✅ [DONE] F5: Modular agent rules knowledge base (--rules) — *f618c65*
+
+Add 'run_block --rules [topic ... | all | --list]' with built-in topics (workflow, semver, python-cli) and user rules in ~/.config/run_block/rules/*.md.

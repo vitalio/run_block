@@ -8,11 +8,9 @@ Task heading format: `### <emoji> [<STATUS>] <ID>: <title>`
 
 ## Resume
 
-Written 2026-11-13. Released `run_block` `v0.8.0` (`15f24a8`):
-- Completed `F1`: native PowerShell (`pwsh` / `powershell`) block execution mode (`.ps1` scripts, AST syntax validation, and PowerShell here-string `--agents` instructions).
-- Completed `F2`: custom safety scanner rules in config (`safety_disable` / `RUN_BLOCK_SAFETY_DISABLE` and `safety_rule.<category>` / `RUN_BLOCK_SAFETY_RULES`).
-- Completed `F3`: session cleanup command (`run_block --clean [--keep N | --all] [--yes]`).
-- Completed `F4`: smart token-budgeted repository map (`run_block --tree [DIR] [--max-lines N] [--max-tokens N]`), usable in `.run_block.start`.
-- All active and planned tasks in `TODO.md` and `TODO_PLAN.md` are complete.
+Written 2026-11-13. Released `run_block` `v0.9.0` (`f618c65`):
+- Completed `F5`: added `run_block --rules [TOPIC ... | all | --list]` with built-in reusable engineering rule modules (`workflow`, `semver`, `python-cli`) and custom user rule files in `~/.config/run_block/rules/*.md`, plus in-process execution from `.run_block.start`.
+- Slimmed `AGENTS.md` in both `run_block` and `~/todo_md` to project-specific rules only, loading universal rules via `$ run_block --rules workflow semver python-cli` in `.run_block.start`.
+- Earlier in session: released `v0.8.0` (`15f24a8`) completing `F1` (PowerShell mode), `F2` (custom safety rules), `F3` (`--clean`), and `F4` (`--tree`).
 
 ## Tasks
