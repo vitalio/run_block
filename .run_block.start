@@ -5,6 +5,7 @@ AGENTS.md
 
 $ todo_md --agents
 $ todo_md
+$ run_block --tree
 $ git status -sb
 $ git branch -vv
 $ git log --oneline -10
