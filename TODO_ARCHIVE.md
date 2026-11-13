@@ -26,3 +26,7 @@ Add `run_block --tree` (usable in `.run_block.start` as `$ run_block --tree`) to
 ### ✅ [DONE] F5: Modular agent rules knowledge base (--rules) — *f618c65*
 
 Add 'run_block --rules [topic ... | all | --list]' with built-in topics (workflow, semver, python-cli) and user rules in ~/.config/run_block/rules/*.md.
+
+### ✅ [DONE] F6: Modularize run_block source into src/ with build.py single-file bundler — *83863e7*
+
+Split monolithic run_block into src/ Python modules and src/templates/*.md + src/rules/*.md files, compiled into standalone ./run_block by build.py.
