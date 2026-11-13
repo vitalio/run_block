@@ -11,8 +11,7 @@
   {prog} --start [opts] [FILE ...]   Build session bundle ({base_dir}/<session>/0.txt) from .run_block.start
                                         Opts: --session NAME, -p/--prompt TEXT, --force
   {prog} --init-start [--force]      Create a starter .run_block.start in the current directory
-  {prog} --agents                    Print Markdown instructions for AI agents
-  {prog} --agents-rules [ITEM ...]   Print engineering rules/presets (default, workflow, python-tool, -rule, k=v, --list)
+  {prog} --agents [ITEM ...|--list]  Print AI agent rules/presets (default, blocks, workflow, python-tool, -rule, k=v)
   {prog} --config                    Show active configuration ({config_path})
   {prog} --init-config [--force]     Create default config file at {config_path}
   {prog} --update [--force]          Self-update {prog} from GitHub (vitalio/run_block)
@@ -54,7 +53,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.11.0"
+VERSION = "0.12.0"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 START_FILE_NAME = ".run_block.start"

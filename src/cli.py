@@ -90,11 +90,10 @@ def main(argv: list[str] | None = None) -> int:
     if "--init-start" in args:
         force = "--force" in args
         return cmd_init_start(force=force)
-    if "--agents" in args or "--agents-md" in args:
-        sys.stdout.write(agents_markdown(prog) + "\n")
-        return 0
+    if args and args[0] in ("--agents", "--agents-md"):
+        return cmd_rules(args[1:], default_target="default")
     if args and args[0] in ("--agents-rules", "--rules"):
-        return cmd_rules(args[1:])
+        return cmd_rules(args[1:], default_target="workflow")
     if not args:
         if not sys.stdin.isatty():
             session = resolve_initial_session(ensure_base())
@@ -145,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if len(args) != 1 or args[0].startswith("-"):
         raise SystemExit(
-            f"{prog}: usage: {prog} [<session>/<step>] (or --fix / --retry / --list / --show / --clean / --tree / --start / --init-start / --config / --agents / --agents-rules / --update / --version / --help)"
+            f"{prog}: usage: {prog} [<session>/<step>] (or --fix / --retry / --list / --show / --clean / --tree / --start / --init-start / --config / --agents / --update / --version / --help)"
         )
     return cmd_normal(args[0], sys.stdin.read())
 

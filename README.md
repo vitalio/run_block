@@ -30,8 +30,7 @@ Create `.run_block.start` in your project root (or run `run_block --init-start`)
 Plain lines are UTF-8 file paths; lines starting with `$ ` are shell commands:
 
 ```text
-$ run_block --agents
-$ run_block --agents-rules python-tool
+$ run_block --agents python-tool
 
 AGENTS.md
 
@@ -108,8 +107,7 @@ Run `run_block --init-config` to create `~/.config/run_block/config` or `run_blo
 | `run_block --tree [DIR] [options]` | Print token-budgeted repository file tree (`--max-lines N`, `--max-tokens N`) |
 | `run_block --start [options] [FILE ..]` | Build `<session>/0.txt` context bundle from `.run_block.start` |
 | `run_block --init-start [--force]` | Create a starter `.run_block.start` in the current directory |
-| `run_block --agents` | Print Markdown instructions for AI agents |
-| `run_block --agents-rules [ITEM ... \| --list]` | Print engineering rules/presets (`default`, `workflow`, `python-tool`, `-rule`, `key=val`) |
+| `run_block --agents [ITEM ... \| --list]` | Print AI agent instructions, presets, and rules (`default`, `blocks`, `workflow`, `python-tool`, `-rule`, `k=v`) |
 | `run_block --config` | Show active configuration and sources |
 | `run_block --init-config [--force]` | Create default `~/.config/run_block/config` |
 | `run_block --update [--force]` | Self-update `run_block` from GitHub (`vitalio/run_block`) |

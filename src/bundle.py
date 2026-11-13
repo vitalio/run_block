@@ -6,7 +6,6 @@ def default_start_template(prog: str | None = None) -> str:
         "# Lines starting with '$ ' (or '! ') are shell commands executed in the project directory.",
         "",
         f"$ {cmd} --agents",
-        f"$ {cmd} --agents-rules",
         "",
         "AGENTS.md",
         "",
@@ -71,15 +70,16 @@ def _run_start_command(cmd_str: str, cwd: Path) -> tuple[int, str]:
     prog = prog_name()
     self_path = str(Path(__file__).resolve())
     # If the command invokes '<prog> --agents' directly, call our own agents_markdown() in-process
-    if re.fullmatch(rf"{re.escape(prog)}\s+--agents(?:-md)?", cmd_str) or re.fullmatch(r"run_block\s+--agents(?:-md)?", cmd_str):
-        return 0, agents_markdown(prog)
-    if re.match(rf"^(?:{re.escape(prog)}|run_block)\s+--(?:agents-)?rules(?:\s+.*)?$", cmd_str):
+    if re.match(rf"^(?:{re.escape(prog)}|run_block)\s+--(?:agents(?:-md|-rules)?|rules)(?:\s+.*)?$", cmd_str):
         try:
-            parts = shlex.split(cmd_str)[2:]
+            tokens = shlex.split(cmd_str)
+            flag = tokens[1]
+            parts = tokens[2:]
             if any(a in ("--list", "-l") for a in parts):
                 pass
             else:
-                return 0, rules_markdown(parts, work_dir=cwd).rstrip()
+                def_tgt = "workflow" if flag in ("--agents-rules", "--rules") else "default"
+                return 0, rules_markdown(parts, work_dir=cwd, default_target=def_tgt, prog=prog).rstrip()
         except SystemExit as exc:
             return 1, str(exc)
     if re.match(rf"^(?:{re.escape(prog)}|run_block)\s+--tree(?:\s+.*)?$", cmd_str):
@@ -125,7 +125,6 @@ def build_start_bundle(
         spec_source = "built-in defaults"
         entries = [
             ("cmd", f"{prog} --agents"),
-            ("cmd", f"{prog} --agents-rules"),
         ]
         if (spec_dir / "AGENTS.md").is_file():
             entries.append(("file", "AGENTS.md"))

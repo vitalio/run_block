@@ -1,5 +1,6 @@
-# Built-in rule presets (groups of atomic rules)
-# Format: name | description | rule1, rule2, ...
-workflow | Core VCS-agnostic agent workflow (start -> plan -> edit -> diff-review -> end) | start, secrets, plan, edit, diff-review, external, end
-default | Default rules (workflow + lang + auto-detected git/cvs) | workflow, lang, auto-vcs
-python-tool | Python CLI utility stack (workflow + lang + git + semver + python-cli) | workflow, lang, git, semver, python-cli
+# Built-in rule presets (logical folders grouping rules/presets and default variables)
+# Format: name | description | item1, item2, key=val, ...
+core | Core VCS-agnostic engineering workflow (start -> plan -> edit -> diff-review -> end) | core/start, core/secrets, core/plan, core/edit, core/diff-review, core/external, core/end
+workflow | Core workflow and language policy (core + lang) | core, core/lang
+default | Default agent instructions (blocks + workflow + auto-detected git/cvs) | blocks, workflow, vcs/auto
+python-tool | Python CLI utility stack (blocks + workflow + git + semver + python-cli) | blocks, workflow, vcs/git, release/semver, stack/python-cli

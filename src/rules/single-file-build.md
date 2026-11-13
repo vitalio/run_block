@@ -1,2 +1,0 @@
-# Description: Modular src/ development compiled into a standalone single-file binary ({build_cmd:python3 build.py})
-- **Single-file build from modular `src/`:** Edit source modules and templates under `src/` rather than hand-editing the generated standalone script. After any change under `src/`, run `{build_cmd:python3 build.py}` to regenerate the standalone executable and verify `{check_cmd:python3 build.py --check}` before committing.
