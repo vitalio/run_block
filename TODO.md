@@ -1,6 +1,6 @@
 # run_block — active tasks and operational state
 
-[README.md](README.md) documents installation and CLI usage; [AGENTS.md](AGENTS.md)
+`README.md` documents installation and CLI usage; `AGENTS.md`
 defines the rules and workflow for an AI agent working on this repository.
 
 Task heading format: `### <emoji> [<STATUS>] <ID>: <title>`
@@ -8,13 +8,11 @@ Task heading format: `### <emoji> [<STATUS>] <ID>: <title>`
 
 ## Resume
 
-Written 2026-11-13. Released `run_block` `v0.6.3`:
-- Redesigned `run_block --agents` so the standard `<cmd> s1/1 <<'RUN_BLOCK'` template appears immediately at the top, eliminated nested 4/5-backtick inline escapes from rules, added explicit guidance on batching multiple commands inside a single block, and prohibited literal inner `RUN_BLOCK`/`RUN_FIX` delimiters in addition to triple backticks.
-- Added interactive confirmation (`prompt_yes_no_box`) when a previous step was skipped (`[!] MISSING PREVIOUS STEP`), when a step already exists (`[!] STEP ALREADY EXISTS`), and when a session already exists (`[!] SESSION ALREADY EXISTS`).
-- Framed `run_block --start` console bundle summary in a box (`format_info_box`) matching `BLOCK PLAN` and `END`.
-- Next in queue: `F1` (PowerShell execution mode on Windows), `F2` (custom safety rules in config), `F3` (`--clean` session pruning).
-
-To start a new chat session: run `run_block --start`.
+Written 2026-11-13. Released `run_block` `v0.6.3` (`931ad4b`) and decoupled documentation from `todo_md`:
+- Redesigned `run_block --agents` with immediate `<cmd> s1/1 <<'RUN_BLOCK'` template, command batching guidance, and strict fence/heredoc protection.
+- Added interactive confirmation (`prompt_yes_no_box`) for skipped previous steps (`[!] MISSING PREVIOUS STEP`), existing steps, and existing sessions, plus `format_info_box` for `run_block --start`.
+- Slimmed `AGENTS.md` to non-computable engineering & release rules and removed cross-references to `todo_md` from `README.md`.
+- Next in queue: `F1` (PowerShell execution mode on Windows), `F2` (custom safety rules in config), `F3` (`--clean` session pruning); deferred: `F4` (`--tree` smart repo map).
 
 ## Tasks
 

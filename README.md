@@ -9,7 +9,6 @@ Bash blocks (`<session>/1`, `<session>/2`, ...) with `bash -n` syntax validation
 pre-execution `BLOCK PLAN` safety scanner, PTY streaming, and one-keystroke clipboard copy
 with Claude/GPT/Gemini token counts.
 
-Works standalone or alongside [`todo_md`](https://github.com/vitalio/todo_md).
 
 ## Quick Installation
 
@@ -35,8 +34,8 @@ $ run_block --agents
 
 AGENTS.md
 
-$ todo_md --agents
-$ todo_md
+TODO.md
+
 $ git status -sb
 $ git branch -vv
 $ git log --oneline -10
