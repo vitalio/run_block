@@ -8,8 +8,13 @@ Task heading format: `### <emoji> [<STATUS>] <ID>: <title>`
 
 ## Resume
 
-Written 2026-11-13. Released `run_block` `v0.9.1` (`d489bd8`):
-- Included `$ run_block --rules` (`workflow` by default) in `run_block --start` built-in defaults when `.run_block.start` is absent, and stopped scanning child subdirectories for `.run_block.start`.
-- Earlier in session: released `v0.9.0` (`f618c65`, task `F5`: `run_block --rules`) and `v0.8.0` (`15f24a8`, tasks `F1`–`F4`: PowerShell mode, custom safety rules, `--clean`, and `--tree`).
+Written 2026-11-13. Released `run_block` `v0.10.0` (`3514abe`):
+- Renamed `--rules` to `--agents-rules` (keeping `--rules` as an alias), extracted `lang` as a standalone rule module, added `key=value` template variable substitution (`{var:default}`), and made `workflow` language-agnostic with the full 3-point `Self-reviewed diff before commit` rule.
+- Updated `.run_block.start` and slimmed `AGENTS.md` in `run_block`, `~/todo_md`, and `~/chrome/canary`.
+- Next in queue: `F6` (modularize `run_block` into `src/` + `build.py` bundler).
 
 ## Tasks
+
+### ⚪ [NEW] F6: Modularize run_block source into src/ with build.py single-file bundler
+
+Split monolithic run_block into src/ Python modules and src/templates/*.md + src/rules/*.md files, compiled into standalone ./run_block by build.py.
