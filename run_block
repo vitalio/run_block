@@ -51,7 +51,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.6.6"
+VERSION = "0.7.0"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 START_FILE_NAME = ".run_block.start"
@@ -157,6 +157,12 @@ def get_setting(key: str, prog: str | None = None) -> tuple[str, str]:
         if "editor" in cfg and cfg["editor"]:
             return cfg["editor"].strip(), "config"
         return "auto", "default"
+    if key == "block_lang":
+        if os.environ.get("RUN_BLOCK_LANG"):
+            return os.environ["RUN_BLOCK_LANG"].strip(), "env"
+        if "block_lang" in cfg and cfg["block_lang"]:
+            return cfg["block_lang"].strip(), "config"
+        return "English", "default"
     if key == "update_url":
         if os.environ.get("RUN_BLOCK_UPDATE_URL"):
             return os.environ["RUN_BLOCK_UPDATE_URL"].strip(), "env"
@@ -206,6 +212,10 @@ def default_config_template(prog: str | None = None) -> str:
         "#   auto -> uses $VISUAL, $EDITOR, nano, less, or vi",
         "editor = auto",
         "",
+        "# Language for commands, comments, and echo output inside blocks (chat prose uses user's language):",
+        "#   English (default), or 'none' to omit the language rule from --agents",
+        "block_lang = English",
+        "",
     ]
     return "\n".join(lines)
 
@@ -216,7 +226,7 @@ def cmd_show_config() -> int:
     exists_str = "exists" if cfg_path.is_file() else "not created yet (run --init-config)"
     sys.stdout.write(f"Config file: {cfg_path} ({exists_str})\n\n")
     sys.stdout.write("Active settings:\n")
-    for k in ("base_dir", "work_dir", "clipboard", "token_stats", "shell", "editor"):
+    for k in ("base_dir", "work_dir", "clipboard", "token_stats", "shell", "editor", "block_lang"):
         val, src = get_setting(k, prog=prog)
         sys.stdout.write(f"  {k:<12} = {val}  (from {src})\n")
     return 0
@@ -246,6 +256,10 @@ def agents_markdown(prog: str | None = None) -> str:
     f3 = chr(96) * 3
     rb = "RUN_" + "BLOCK"
     rf = "RUN_" + "FIX"
+    lang, _ = get_setting("block_lang", prog=cmd)
+    lang_clean = lang.strip()
+    has_lang = bool(lang_clean and lang_clean.lower() not in ("none", "off", "false"))
+
     lines = [
         f"## Terminal blocks (`{cmd}` v{VERSION})",
         "",
@@ -263,9 +277,10 @@ def agents_markdown(prog: str | None = None) -> str:
         f"   - Output **at most ONE** `{cmd}` block per reply (never two, never \"step 1 / step 2\").",
         "   - Inside that single block, you can run **as many commands, file reads, scripts, and checks as needed** — batch related steps into one block instead of splitting them across multiple turns.",
         f"   - The closing fence of the `{cmd}` block must be the **very last line of your reply** — output **zero trailing text or characters** after it and stop generating immediately.",
-        "2. **COLUMN-0 FENCES & HEREDOC:**",
+        "2. **COLUMN-0 FENCES & SEPARATE-LINE HEREDOC TERMINATOR:**",
         "   - Leave an **empty line** immediately before the opening `bash` fence.",
         f"   - Start the opening `bash` fence, `{cmd} ... <<'{rb}'`, `{rb}`, and the closing fence at **column 0** (no leading spaces, no list indentation, no `>` blockquotes).",
+        f"   - `{rb}` (or `{rf}`) must be on its **own line**, and the closing fence must be on the **next line** (never concatenate `{rb}` and the closing fence on the same line).",
         f"   - If you include any other code blocks earlier in your explanation, make sure their closing fences are properly closed before the `{cmd}` block starts.",
         "3. **NO INNER TRIPLE BACKTICKS OR HEREDOC DELIMITERS (NEVER BREAK THE FENCE):**",
         "   - **Never** write three consecutive backticks anywhere inside the script body (not in strings, comments, or nested heredocs) — that prematurely closes the Markdown code block in the chat UI and truncates the script!",
@@ -273,6 +288,16 @@ def agents_markdown(prog: str | None = None) -> str:
         "   - If your script needs triple backticks or heredoc markers (e.g. when generating Markdown files or tests), build them dynamically:",
         f"     - **Python:** `F3 = chr(96) * 3`, `RB = 'RUN_' + 'BLOCK'`",
         "     - **Bash:** `F3=$(printf '\\140\\140\\140')`, `RB='RUN_'\"BLOCK\"`",
+    ]
+    if has_lang:
+        lines.append(
+            f"4. **LANGUAGE, PROGRESS & SECRETS:** Keep everything inside a block (commands, comments, `echo` output) in **{lang_clean}**; write chat prose outside blocks in the language the user writes in. Print periodic progress to `stderr` on long waits; never print secret files/tokens or enable `set -x` around credentials."
+        )
+    else:
+        lines.append(
+            "4. **PROGRESS & SECRETS:** Print periodic progress to `stderr` on long waits; never print secret files/tokens or enable `set -x` around credentials."
+        )
+    lines.extend([
         "",
         "### Session & Step Numbering (`<session>/<step>`)",
         "",
@@ -280,6 +305,7 @@ def agents_markdown(prog: str | None = None) -> str:
         "- **No step reuse:** Every executed block consumes its step number, even if it fails. Never reuse or skip a step number.",
         "- **Isolated shell:** Each block runs in a fresh `bash` process starting in `Workdir` (`cd` and shell variables do not persist across blocks).",
         f"- **Unknown session only:** Only if the chat started without a `Session:` / `Next block:` header, omit `<session>/<step>` on the first block (`{cmd} <<'{rb}'`). Never guess `s1/1`.",
+        f"- **Focused task handoff:** To build a new session context bundle (`0.txt`) for a focused task chat, run `{cmd} --start -p \"<task prompt>\" [file ...]`.",
         "",
         "### Fixing a Failed Block (`--fix <session>/<target>`)",
         "",
@@ -295,7 +321,7 @@ def agents_markdown(prog: str | None = None) -> str:
         f"{f3}",
         "",
         "If the failed run already partially changed state and is not idempotent, use the next sequential step (`s1/2`) instead of `--fix`.",
-    ]
+    ])
     return "\n".join(lines)
 
 def _git_toplevel_or_cwd() -> Path:

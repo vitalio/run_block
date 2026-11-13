@@ -8,9 +8,9 @@ Task heading format: `### <emoji> [<STATUS>] <ID>: <title>`
 
 ## Resume
 
-Written 2026-11-13. Released `run_block` `v0.6.6`:
-- Tightened terminal box width calculation (`format_info_box`, `format_prompt_box`, `format_safety_box`, `format_clipboard_box`) by removing the 52-char minimum width and extra right padding so every box fits its content with exactly 1 space of left/right padding.
-- Framed all block lifecycle messages (`START`, `SYNTAX ERROR`, `NOT RUN`, `END`) in terminal boxes (`v0.6.5`), removed `TODO.md` references from `run_block` (`v0.6.4`), and updated `AGENTS.md` with explicit `PATCH`/`MINOR`/`MAJOR` versioning rules.
+Written 2026-11-13. Released `run_block` `v0.7.0`:
+- Added configurable `block_lang` (`RUN_BLOCK_LANG`, default `English`, or `none` to omit) and updated `run_block --agents` with rule 4 (`LANGUAGE, PROGRESS & SECRETS`), explicit separate-line `RUN_BLOCK` terminator rule, and `--start -p` handoff guidance.
+- Adopted the `Workflow: Start -> Investigate -> Plan -> Edit -> Test -> Commit -> End` structure in `AGENTS.md` and restored clean, quiet `unittest -v` output.
 - Next in queue: `F1` (PowerShell execution mode on Windows), `F2` (custom safety rules in config), `F3` (`--clean` session pruning); deferred: `F4` (`--tree` smart repo map).
 
 ## Tasks
