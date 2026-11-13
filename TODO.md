@@ -8,9 +8,9 @@ Task heading format: `### <emoji> [<STATUS>] <ID>: <title>`
 
 ## Resume
 
-Written 2026-11-13. Released `run_block` `v0.12.0` (`d6d883b`):
-- Unified `--agents [ITEM ... | -RULE | KEY=VAL | --list]` with a categorized `src/rules/{blocks,core,vcs,release,stack}/` directory hierarchy, removed `src/templates/`, and strengthened the mandatory `--fix` preference rule.
-- Added deferred roadmap tasks `F7` (plugin system + LLM block analyzer + headless protocol mode) and `F8` (standalone `agents_bundle` project) to `TODO_PLAN.md`.
-- Earlier in session: completed `F1`–`F6` (`v0.8.0`–`v0.11.0`).
+Written 2026-11-13. Released `run_block` `v0.13.0` (`99bc5e1`), `agents_rules` `v0.1.0`, and `agents_bundle` `v0.1.0`:
+- Completed `F8`: created and published standalone GitHub repositories `vitalio/agents_rules` (`v0.1.0`, namespaced rule & preset package manager/renderer) and `vitalio/agents_bundle` (`v0.1.0`, pure Unix context bundler and `--tree`).
+- Slimmed `run_block` (`v0.13.0`) to a pure block execution protocol where `run_block --start` reads the context bundle from `stdin` (`agents_bundle | run_block --start`) and `run_block --agents` prints only the terminal block protocol.
+- Deferred in `TODO_PLAN.md`: `F7` (plugin system + LLM block analyzer + headless mode) and `F9` (Unix philosophy audit of `run_block` and `todo_md`).
 
 ## Tasks

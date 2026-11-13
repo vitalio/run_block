@@ -30,3 +30,7 @@ Add 'run_block --rules [topic ... | all | --list]' with built-in topics (workflo
 ### ✅ [DONE] F6: Modularize run_block source into src/ with build.py single-file bundler — *83863e7*
 
 Split monolithic run_block into src/ Python modules and src/templates/*.md + src/rules/*.md files, compiled into standalone ./run_block by build.py.
+
+### ✅ [DONE] F8: Extract context bundler and engineering rules catalog into standalone agents_bundle project — *99bc5e1*
+
+Move --start, .agents_bundle spec, --tree, and universal engineering rules/presets into a separate zero-dependency 'agents_bundle' CLI with zero hardcoded coupling to run_block (connected via user config and 'run_block --bundle').
