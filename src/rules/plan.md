@@ -1,0 +1,3 @@
+# Description: Read code before guessing, agree on high-level plan before coding, no duplicate blocks
+- **Investigate & Plan:** Ask to see or read code rather than guessing it, and say "not known" rather than filling a gap. Always state a high-level plan in chat (target outcome, rules, and behavior — not a line-by-line code diff or replacement dump) and wait for user agreement before writing code.
+- **No duplicate unexecuted blocks:** If the user asks a question or requests an explanation about a block you already output in the previous reply and the script itself does not need to change, answer in prose and tell the user to run that existing `<session>/<step>` block — **do not** output the same block a second time.

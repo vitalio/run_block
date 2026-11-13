@@ -371,7 +371,7 @@ class TestRunBlock(unittest.TestCase):
         self.assertNotIn("# Subproject rules", bundle)
         self.assertIn("===== $ run_block --agents =====", bundle)
         self.assertIn("===== $ run_block --agents-rules =====", bundle)
-        self.assertIn("## Agent Engineering Rules (workflow, lang)", bundle)
+        self.assertIn("## Agent Engineering Rules (start, secrets, plan, edit, diff-review, external, end, lang)", bundle)
 
 
     def test_info_and_prompt_boxes_and_skipped_step_confirmation(self):
@@ -507,42 +507,60 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("deep/ (25 files, 75L)", str(res["full"]))
 
     def test_rules_builtin_and_custom_and_start_bundle(self):
-        # Default topics (workflow, lang) and variable substitution
-        md_def = self.mod.rules_markdown()
-        self.assertIn("## Agent Engineering Rules (workflow, lang)", md_def)
-        self.assertIn("Workflow: Start → Investigate → Plan → Edit → Test → Commit → End", md_def)
-        self.assertIn("### Language Policy", md_def)
+        # Verify build.py --check succeeds and build.py -h exits 0
+        r_bhelp = subprocess.run(["python3", str(ROOT / "build.py"), "-h"], capture_output=True, text=True, check=False)
+        self.assertEqual(r_bhelp.returncode, 0)
+        self.assertIn("Usage:", r_bhelp.stdout)
+        r_bchk = subprocess.run(["python3", str(ROOT / "build.py"), "--check"], capture_output=True, text=True, check=False)
+        self.assertEqual(r_bchk.returncode, 0, r_bchk.stderr)
+
+        # Default preset in a git repo includes workflow atomic rules + lang + git
+        git_dir = self.tmp / "fake_git"
+        (git_dir / ".git").mkdir(parents=True)
+        md_def = self.mod.rules_markdown(work_dir=git_dir)
+        self.assertIn("## Agent Engineering Rules (start, secrets, plan, edit, diff-review, external, end, lang, git)", md_def)
+        self.assertIn("Guarded commit blocks:", md_def)
         self.assertIn("in **English**", md_def)
 
-        md_var = self.mod.rules_markdown(["lang", "python-cli", "lang=Russian", "py_min=3.11"])
+        # Default preset in a CVS directory auto-selects cvs instead of git
+        cvs_dir = self.tmp / "fake_cvs"
+        (cvs_dir / "CVS").mkdir(parents=True)
+        md_cvs = self.mod.rules_markdown(work_dir=cvs_dir)
+        self.assertIn("lang, cvs)", md_cvs)
+        self.assertIn("CVS workflow & safety:", md_cvs)
+
+        # Variable substitution and rule exclusion (-external)
+        md_var = self.mod.rules_markdown(["workflow", "-external", "lang", "python-cli", "lang=Russian", "py_min=3.11"])
+        self.assertNotIn("external", md_var.splitlines()[0])
         self.assertIn("in **Russian**", md_var)
         self.assertIn("Python 3.11+ compatibility", md_var)
 
         # Multiple topics + custom rule in RUN_BLOCK_RULES_DIR
         rdir = self.tmp / "custom_rules"
         rdir.mkdir()
-        (rdir / "security.md").write_text("### Custom Security Rule\n\n- Never hardcode secrets.\n", encoding="utf-8")
+        (rdir / "security.md").write_text("# Description: Custom security policy\n- **Security:** Never hardcode secrets.\n", encoding="utf-8")
         os.environ["RUN_BLOCK_RULES_DIR"] = str(rdir)
         try:
             md_all = self.mod.rules_markdown(["all"])
-            self.assertIn("workflow, lang, semver, python-cli, security", md_all)
-            self.assertIn("### Versioning & Releases (SemVer)", md_all)
-            self.assertIn("### Python CLI Engineering Invariants", md_all)
-            self.assertIn("### Custom Security Rule", md_all)
+            self.assertIn("security", md_all.splitlines()[0])
+            self.assertIn("Versioning & releases (SemVer):", md_all)
+            self.assertIn("Python CLI engineering invariants:", md_all)
+            self.assertIn("- **Security:** Never hardcode secrets.", md_all)
 
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 rc_list = self.mod.cmd_rules(["--list"])
             self.assertEqual(rc_list, 0)
-            self.assertIn("Built-in rule topics:", buf.getvalue())
+            self.assertIn("Rule presets (groups of rules):", buf.getvalue())
+            self.assertIn("Atomic rules", buf.getvalue())
             self.assertIn("security", buf.getvalue())
 
             proj = self.tmp / "rules_proj"
             proj.mkdir()
-            (proj / ".run_block.start").write_text("$ run_block --agents-rules workflow security\n", encoding="utf-8")
+            (proj / ".run_block.start").write_text("$ run_block --agents-rules workflow -external security\n", encoding="utf-8")
             res = self.mod.build_start_bundle("s1", work_dir=proj)
-            self.assertIn("===== $ run_block --agents-rules workflow security =====", str(res["full"]))
-            self.assertIn("### Custom Security Rule", str(res["full"]))
+            self.assertIn("===== $ run_block --agents-rules workflow -external security =====", str(res["full"]))
+            self.assertIn("- **Security:** Never hardcode secrets.", str(res["full"]))
         finally:
             os.environ.pop("RUN_BLOCK_RULES_DIR", None)
 

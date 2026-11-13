@@ -1,0 +1,2 @@
+# Description: End-of-session summary, uncommitted work check, docs update, and todo_md resume
+- **Ending a session:** When the user says "end session" or asks to stop: (1) give a concise session summary in chat (tasks completed, key changes, commit identifiers, and what remains); (2) report uncommitted or unpushed changes; (3) record durable decisions in `README.md` or `AGENTS.md`; (4) update `Resume` in `TODO.md` (`todo_md resume` and `todo_md check`) if used.

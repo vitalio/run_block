@@ -31,7 +31,7 @@ Plain lines are UTF-8 file paths; lines starting with `$ ` are shell commands:
 
 ```text
 $ run_block --agents
-$ run_block --agents-rules workflow lang semver python-cli
+$ run_block --agents-rules python-tool
 
 AGENTS.md
 
@@ -109,7 +109,7 @@ Run `run_block --init-config` to create `~/.config/run_block/config` or `run_blo
 | `run_block --start [options] [FILE ..]` | Build `<session>/0.txt` context bundle from `.run_block.start` |
 | `run_block --init-start [--force]` | Create a starter `.run_block.start` in the current directory |
 | `run_block --agents` | Print Markdown instructions for AI agents |
-| `run_block --agents-rules [TOPIC ... \| --list]` | Print reusable engineering rules (`workflow`, `lang`, `semver`, `python-cli`, `all`, `key=val`) |
+| `run_block --agents-rules [ITEM ... \| --list]` | Print engineering rules/presets (`default`, `workflow`, `python-tool`, `-rule`, `key=val`) |
 | `run_block --config` | Show active configuration and sources |
 | `run_block --init-config [--force]` | Create default `~/.config/run_block/config` |
 | `run_block --update [--force]` | Self-update `run_block` from GitHub (`vitalio/run_block`) |

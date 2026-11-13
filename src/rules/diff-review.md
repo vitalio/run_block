@@ -1,0 +1,6 @@
+# Description: Two-step self-reviewed diff before commit and guarded commit blocks (set -euo pipefail)
+- **Self-reviewed diff before commit:** A block that edits files does **not** commit. It runs syntax/linter checks and local tests, and prints the working tree status and full diff.
+  - When the user pastes the output, **the model itself must audit the full diff** against all project rules (no leftover names/dead code, single responsibility and directory boundaries, updated `README.md` entries, `-h` usage). If any issue is found in the diff, fix it in the next block and print the new diff — repeat until the diff is completely clean.
+  - Once the model verifies that the printed diff is clean and tests pass, immediately give the commit block in the same reply without asking the user to review or confirm the diff.
+  - *Exception:* a trivial text-only change (1–2 lines, no code) may edit, show the diff, and commit in one block.
+- **Guarded commit blocks:** Because files on disk may change between turns, every block that commits or publishes changes must start with `set -euo pipefail` and re-run the project's fast syntax/linter checks and local unit tests immediately before the commit command, so any failure aborts the block before committing.

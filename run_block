@@ -12,7 +12,7 @@
                                         Opts: --session NAME, -p/--prompt TEXT, --force
   {prog} --init-start [--force]      Create a starter .run_block.start in the current directory
   {prog} --agents                    Print Markdown instructions for AI agents
-  {prog} --agents-rules [TOPIC ...]  Print reusable engineering rules (workflow, semver, python-cli, all, --list)
+  {prog} --agents-rules [ITEM ...]   Print engineering rules/presets (default, workflow, python-tool, -rule, k=v, --list)
   {prog} --config                    Show active configuration ({config_path})
   {prog} --init-config [--force]     Create default config file at {config_path}
   {prog} --update [--force]          Self-update {prog} from GitHub (vitalio/run_block)
@@ -54,7 +54,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 START_FILE_NAME = ".run_block.start"
@@ -294,253 +294,6 @@ def usage_text() -> str:
     return (__doc__ or "").format(prog=prog, base_dir=bdir, config_path=cpath)
 
 
-def agents_markdown(prog: str | None = None) -> str:
-    cmd = prog or prog_name()
-    f3 = chr(96) * 3
-    rb = "RUN_" + "BLOCK"
-    rf = "RUN_" + "FIX"
-    is_ps = _is_powershell()
-    fence_lang = "powershell" if is_ps else "bash"
-    shell_label = "pwsh" if is_ps else "bash"
-    open_block = [f"{f3}powershell", "@'", "git status -sb", f"'@ | {cmd} s1/1", f"{f3}"] if is_ps else [f"{f3}bash", f"{cmd} s1/1 <<'{rb}'", "git status -sb", f"{rb}", f"{f3}"]
-    first_block_ex = f"`@' ... '@ | {cmd}`" if is_ps else f"`{cmd} <<'{rb}'`"
-    fix_block = (
-        [
-            f"{f3}powershell",
-            "@'",
-            "old = 'wrong_command'",
-            "new = 'right_command'",
-            "assert text.count(old) == 1",
-            "text = text.replace(old, new, 1)",
-            f"'@ | {cmd} --fix s1/1",
-            f"{f3}",
-        ]
-        if is_ps
-        else [
-            f"{f3}bash",
-            f"{cmd} --fix s1/1 <<'{rf}'",
-            "old = 'wrong_command'",
-            "new = 'right_command'",
-            "assert text.count(old) == 1",
-            "text = text.replace(old, new, 1)",
-            f"{rf}",
-            f"{f3}",
-        ]
-    )
-
-    lines = [
-        f"## Terminal blocks (`{cmd}` v{VERSION})",
-        "",
-        f"You have no direct shell access. To run commands, end your reply with a `{cmd}` Markdown code block in this exact format:",
-        "",
-        *open_block,
-        "",
-        "### CRITICAL — STRICT LAYOUT & MARKDOWN FENCE RULES",
-        "",
-        "1. **ONE BLOCK PER MESSAGE, ALWAYS AT THE VERY END (BATCH COMMANDS INSIDE IT):**",
-        f"   - Output **at most ONE** `{cmd}` block per reply (never two, never \"step 1 / step 2\").",
-        "   - Inside that single block, you can run **as many commands, file reads, scripts, and checks as needed** — batch related steps into one block instead of splitting them across multiple turns.",
-        f"   - The closing fence of the `{cmd}` block must be the **very last line of your reply** — output **zero trailing text or characters** after it and stop generating immediately.",
-        "2. **COLUMN-0 FENCES & SEPARATE-LINE HEREDOC TERMINATOR:**",
-        f"   - Leave an **empty line** immediately before the opening `{fence_lang}` fence.",
-        (
-            f"   - Start the opening `powershell` fence, `@'`, `'@ | {cmd} ...`, and the closing fence at **column 0** (no leading spaces, no list indentation, no `>` blockquotes)."
-            if is_ps
-            else f"   - Start the opening `bash` fence, `{cmd} ... <<'{rb}'`, `{rb}`, and the closing fence at **column 0** (no leading spaces, no list indentation, no `>` blockquotes)."
-        ),
-        (
-            f"   - `'@ | {cmd} ...` must be on its **own line**, and the closing fence must be on the **next line**."
-            if is_ps
-            else f"   - `{rb}` (or `{rf}`) must be on its **own line**, and the closing fence must be on the **next line** (never concatenate `{rb}` and the closing fence on the same line)."
-        ),
-        f"   - If you include any other code blocks earlier in your explanation, make sure their closing fences are properly closed before the `{cmd}` block starts.",
-        "3. **NO INNER TRIPLE BACKTICKS OR HEREDOC DELIMITERS (NEVER BREAK THE FENCE):**",
-        "   - **Never** write three consecutive backticks anywhere inside the script body (not in strings, comments, or nested heredocs) — that prematurely closes the Markdown code block in the chat UI and truncates the script!",
-        (
-            "   - **Never** write literal `'@` at column 0 inside the script body — PowerShell will terminate the outer here-string early!"
-            if is_ps
-            else f"   - **Never** write literal `{rb}` or `{rf}` on its own line inside the script body — bash will terminate the outer heredoc early!"
-        ),
-        "   - If your script needs triple backticks or heredoc markers (e.g. when generating Markdown files or tests), build them dynamically:",
-        f"     - **Python:** `F3 = chr(96) * 3`, `RB = 'RUN_' + 'BLOCK'`",
-        "     - **Bash:** `F3=$(printf '\\140\\140\\140')`, `RB='RUN_'\"BLOCK\"`",
-        "",
-        "### Session & Step Numbering (`<session>/<step>`)",
-        "",
-        "- **Standard block:** Use `Next block: <session>/<step>` from the session header (e.g. `s1/1`), then increment the step sequentially (`s1/2`, `s1/3`, ...) after each `[<session>/<step>]` result.",
-        "- **No step reuse:** Every executed block consumes its step number, even if it fails. Never reuse or skip a step number.",
-        f"- **Isolated shell:** Each block runs in a fresh `{shell_label}` process starting in `Workdir` (`cd` and shell variables do not persist across blocks).",
-        f"- **Unknown session only:** Only if the chat started without a `Session:` / `Next block:` header, omit `<session>/<step>` on the first block ({first_block_ex}). Never guess `s1/1`.",
-        f"- **Focused task handoff:** To build a new session context bundle (`0.txt`) for a focused task chat, run `{cmd} --start -p \"<task prompt>\" [file ...]`.",
-        "",
-        "### Fixing a Failed Block (`--fix <session>/<target>`)",
-        "",
-        "When a long block fails on a small typo and re-running from scratch is safe (idempotent), patch the previous script via Python (`text` holds the target block's script) instead of rewriting the whole block:",
-        "",
-        *fix_block,
-        "",
-        "If the failed run already partially changed state and is not idempotent, use the next sequential step (`s1/2`) instead of `--fix`.",
-    ]
-    return "\n".join(lines)
-
-BUILTIN_RULES: dict[str, tuple[str, list[str]]] = {
-    "workflow": (
-        "Core agent workflow (Start -> Investigate -> Plan -> Edit -> Test -> Commit -> End)",
-        [
-            "### Workflow: Start → Investigate → Plan → Edit → Test → Commit → End",
-            "",
-            "- **Start & task handoff:** Uncommitted work or an active pipeline comes before unrelated work — ask what to do first. Format dates to the user in chat as `{chat_date_fmt:DD/MM/YYYY}`; in files, commits, and logs use ISO `YYYY-MM-DD`. When starting a focused task chat, build a context bundle via `run_block --start -p \"Let's work on task <ID>...\" [file ...]`.",
-            "- **Progress & secrets:** Print periodic progress to `stderr` on long waits. Never print secret files/tokens or enable `set -x` around credentials; if a credential is ever pasted into chat, tell the user at once to rotate it.",
-            "- **Investigate & Plan:** Ask to see or read code rather than guessing it, and say \"not known\" rather than filling a gap. Always state a high-level plan in chat (target outcome, rules, and behavior — not a line-by-line code diff or replacement dump) and wait for user agreement before writing code.",
-            "- **Edit & pre-commit checks:** When editing files programmatically, assert that each search anchor occurs uniquely (`count == 1`) before writing, and avoid raw multiline strings that could break the chat Markdown fence. Every CLI tool must print usage on `-h`/`--help` and exit `0` doing nothing; update `README.md` and `-h`/`--help` in the same commit when changing behavior, flags, or config options. Before committing, always run syntax/linter checks on modified files and run the project's local test suite (offline unit tests) so untested or broken code is never committed.",
-            "- **Self-reviewed diff before commit:** A block that edits files does **not** commit. It marks new files with `git add -N`, runs syntax/linter checks and local tests, and prints `git status --porcelain` and the full `git diff HEAD`.",
-            "  - When the user pastes the output, **the model itself must audit the full diff** against all project rules (no leftover names/dead code, single responsibility and directory boundaries, updated `README.md` entries, `-h` usage). If any issue is found in the diff, fix it in the next block and print the new `git diff HEAD` — repeat until the diff is completely clean.",
-            "  - Once the model verifies that the printed diff is clean and tests pass, immediately give the `git commit` block in the same reply without asking the user to review or confirm the diff.",
-            "  - *Exception:* a trivial text-only change (1–2 lines, no code) may edit, show the diff, and commit in one block.",
-            "- **Commits & external changes:** Without explicit user approval each time: **no `git push --force`, no `git reset --hard`, no deleting a branch or tag, no rewriting a pushed commit.** Describe changes in external text (commit messages, MR descriptions, Slack, status updates) in words without internal task IDs. Changes outside Git (remote branches, MR descriptions, Slack) follow the same two-step rule: first a read-only preview block saving what it replaces, then the write block after agreement.",
-            "- **Ending a session:** When the user says \"end session\" or asks to stop: (1) give a concise session summary in chat (tasks completed, key changes, commit SHAs, and what remains); (2) report uncommitted changes, unpushed commits, and unmerged branches; (3) record durable decisions in `README.md` or `AGENTS.md`; (4) update `Resume` in `TODO.md` (`todo_md resume` and `todo_md check`) if used.",
-        ],
-    ),
-    "lang": (
-        "Language rules for chat prose vs blocks, code, docs, and commits ({lang:English})",
-        [
-            "### Language Policy",
-            "",
-            "- **Chat vs code & artifacts:** Write chat prose outside blocks in {chat_lang:the language the user writes in}; keep everything inside blocks (commands, comments, `echo` output) as well as documentation, code, files, and commit messages in **{lang:English}** (translate any quote before inserting it into a file).",
-        ],
-    ),
-    "semver": (
-        "Semantic Versioning and release tagging rules (PATCH / MINOR / MAJOR)",
-        [
-            "### Versioning & Releases (SemVer)",
-            "",
-            "- **Bump rules:**",
-            "  - `PATCH` (`0.Y.Z+1`) — bugfixes, UI/box tweaks, and `--agents`/`--agents-rules`/`--help`/docs updates.",
-            "  - `MINOR` (`0.Y+1.0`) — new CLI commands/flags or config options.",
-            "  - `MAJOR` (`X+1.0.0`) — breaking changes or only when explicitly requested.",
-            "- **Release steps:** Keep `VERSION` and in-code `VERSION = \"...\"` in sync, reinstall locally if applicable, commit, push to `origin {main_branch:main}`, and push an annotated release tag (`git tag -a vX.Y.Z -m \"Release vX.Y.Z\" && git push origin vX.Y.Z`).",
-        ],
-    ),
-    "python-cli": (
-        "Zero-dependency Python 3 CLI engineering invariants",
-        [
-            "### Python CLI Engineering Invariants",
-            "",
-            "- **Zero external dependencies:** Use only the Python 3 standard library (`from __future__ import annotations` at top of Python files for Python {py_min:3.9}+ compatibility).",
-            "- **Single responsibility & clean CLI:** Every flag/command must be documented in `-h`/`--help` (which exits `0` doing nothing) and covered by unit tests.",
-            "- **Python & shell pre-commit checks:** Syntax-check shell scripts with `bash -n` and `shellcheck -S warning`, verify Python syntax with `ast.parse`, and run `tests/test_*.py` unit tests before committing.",
-        ],
-    ),
-}
-
-
-def rules_dir_path() -> Path:
-    env_dir = os.environ.get("RUN_BLOCK_RULES_DIR")
-    if env_dir:
-        return Path(env_dir).expanduser()
-    return config_file_path().parent / "rules"
-
-
-def _discover_user_rules() -> dict[str, Path]:
-    rdir = rules_dir_path()
-    if not rdir.is_dir():
-        return {}
-    out: dict[str, Path] = {}
-    try:
-        for p in sorted(rdir.glob("*.md")):
-            if p.is_file():
-                out[p.stem.lower()] = p
-    except OSError:
-        pass
-    return out
-
-
-RULE_VAR_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*):([^{}]*)\}")
-
-
-def _render_rule_vars(text: str, vars_map: dict[str, str]) -> str:
-    return RULE_VAR_RE.sub(lambda m: vars_map.get(m.group(1), m.group(2)), text)
-
-
-def rules_markdown(args: list[str] | None = None) -> str:
-    prog = prog_name()
-    user_rules = _discover_user_rules()
-    raw_topics: list[str] = []
-    vars_map: dict[str, str] = {}
-    for item in args or []:
-        s = item.strip()
-        if not s:
-            continue
-        if "=" in s:
-            k, v = s.split("=", 1)
-            k_clean = k.strip()
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k_clean):
-                raise SystemExit(f"{prog}: invalid rule variable name {k_clean!r} in {s!r}")
-            vars_map[k_clean] = v.strip()
-        else:
-            raw_topics.append(s.lower())
-
-    if not raw_topics:
-        raw_topics = ["workflow", "lang"]
-
-    expanded: list[str] = []
-    for t in raw_topics:
-        if t == "all":
-            for k in BUILTIN_RULES:
-                if k not in expanded:
-                    expanded.append(k)
-            for k in user_rules:
-                if k not in expanded:
-                    expanded.append(k)
-        else:
-            if t not in expanded:
-                expanded.append(t)
-
-    blocks: list[str] = []
-    for t in expanded:
-        if t in user_rules:
-            body = user_rules[t].read_text(encoding="utf-8", errors="replace").strip()
-            if body:
-                blocks.append(_render_rule_vars(body, vars_map))
-        elif t in BUILTIN_RULES:
-            blocks.append(_render_rule_vars("\n".join(BUILTIN_RULES[t][1]), vars_map))
-        else:
-            avail = sorted(set(BUILTIN_RULES.keys()) | set(user_rules.keys())) + ["all"]
-            raise SystemExit(
-                f"{prog}: unknown rule topic {t!r} (available: {', '.join(avail)})"
-            )
-
-    hdr = f"## Agent Engineering Rules ({', '.join(expanded)})"
-    return hdr + "\n\n" + "\n\n".join(blocks)
-
-
-def cmd_rules(argv: list[str]) -> int:
-    prog = prog_name()
-    if any(a in ("--list", "-l") for a in argv):
-        if len(argv) > 1:
-            raise SystemExit(f"{prog}: usage: {prog} --agents-rules [TOPIC ... | all | --list]")
-        user_rules = _discover_user_rules()
-        rdir = rules_dir_path()
-        sys.stdout.write("Built-in rule topics:\n")
-        for k, (desc, _) in BUILTIN_RULES.items():
-            override = " (overridden by user file)" if k in user_rules else ""
-            sys.stdout.write(f"  {k:<12}  {desc}{override}\n")
-        sys.stdout.write("  all           Include all built-in and custom rule topics\n")
-        custom_only = {k: p for k, p in user_rules.items() if k not in BUILTIN_RULES}
-        sys.stdout.write(f"\nCustom rule files ({rdir}):\n")
-        if custom_only:
-            for k, p in custom_only.items():
-                sys.stdout.write(f"  {k:<12}  {p}\n")
-        else:
-            sys.stdout.write("  (none — add <topic>.md files to this directory to define custom rules)\n")
-        return 0
-    for a in argv:
-        if a.startswith("-"):
-            raise SystemExit(f"{prog}: usage: {prog} --agents-rules [TOPIC ... | all | --list]")
-    sys.stdout.write(rules_markdown(argv) + "\n")
-    return 0
-
-
 def _git_toplevel_or_cwd() -> Path:
     try:
         r = subprocess.run(
@@ -614,6 +367,462 @@ def no_clipboard() -> bool:
 
 def in_run_block() -> bool:
     return os.environ.get("IN_RUN_BLOCK") == "1"
+
+
+# --- Embedded Markdown templates and rules (generated by build.py from src/) ---
+EMBEDDED_TEMPLATES: dict[str, str] = {'agents_bash': '## Terminal blocks (`{cmd}` v{version})\n'
+                '\n'
+                'You have no direct shell access. To run commands, end your reply with a `{cmd}` '
+                'Markdown code block in this exact format:\n'
+                '\n'
+                '```bash\n'
+                "{cmd} s1/1 <<'RUN_BLOCK'\n"
+                'git status -sb\n'
+                'RUN_BLOCK\n'
+                '```\n'
+                '\n'
+                '### CRITICAL — STRICT LAYOUT & MARKDOWN FENCE RULES\n'
+                '\n'
+                '1. **ONE BLOCK PER MESSAGE, ALWAYS AT THE VERY END (BATCH COMMANDS INSIDE IT):**\n'
+                '   - Output **at most ONE** `{cmd}` block per reply (never two, never "step 1 / '
+                'step 2").\n'
+                '   - Inside that single block, you can run **as many commands, file reads, '
+                'scripts, and checks as needed** — batch related steps into one block instead of '
+                'splitting them across multiple turns.\n'
+                '   - The closing fence of the `{cmd}` block must be the **very last line of your '
+                'reply** — output **zero trailing text or characters** after it and stop '
+                'generating immediately.\n'
+                '2. **COLUMN-0 FENCES & SEPARATE-LINE HEREDOC TERMINATOR:**\n'
+                '   - Leave an **empty line** immediately before the opening `bash` fence.\n'
+                "   - Start the opening `bash` fence, `{cmd} ... <<'RUN_BLOCK'`, `RUN_BLOCK`, and "
+                'the closing fence at **column 0** (no leading spaces, no list indentation, no `>` '
+                'blockquotes).\n'
+                '   - `RUN_BLOCK` (or `RUN_FIX`) must be on its **own line**, and the closing '
+                'fence must be on the **next line** (never concatenate `RUN_BLOCK` and the closing '
+                'fence on the same line).\n'
+                '   - If you include any other code blocks earlier in your explanation, make sure '
+                'their closing fences are properly closed before the `{cmd}` block starts.\n'
+                '3. **NO INNER TRIPLE BACKTICKS OR HEREDOC DELIMITERS (NEVER BREAK THE FENCE):**\n'
+                '   - **Never** write three consecutive backticks anywhere inside the script body '
+                '(not in strings, comments, or nested heredocs) — that prematurely closes the '
+                'Markdown code block in the chat UI and truncates the script!\n'
+                '   - **Never** write literal `RUN_BLOCK` or `RUN_FIX` on its own line inside the '
+                'script body — bash will terminate the outer heredoc early!\n'
+                '   - If your script needs triple backticks or heredoc markers (e.g. when '
+                'generating Markdown files or tests), build them dynamically:\n'
+                "     - **Python:** `F3 = chr(96) * 3`, `RB = 'RUN_' + 'BLOCK'`\n"
+                '     - **Bash:** `F3=$(printf \'\\140\\140\\140\')`, `RB=\'RUN_\'"BLOCK"`\n'
+                '\n'
+                '### Session & Step Numbering (`<session>/<step>`)\n'
+                '\n'
+                '- **Standard block:** Use `Next block: <session>/<step>` from the session header '
+                '(e.g. `s1/1`), then increment the step sequentially (`s1/2`, `s1/3`, ...) after '
+                'each `[<session>/<step>]` result.\n'
+                '- **No step reuse:** Every executed block consumes its step number, even if it '
+                'fails. Never reuse or skip a step number.\n'
+                '- **No duplicate unexecuted blocks:** If the user asks a question or requests an '
+                'explanation about a block you already output in the previous reply and the script '
+                'itself does not need to change, answer in prose and tell the user to run that '
+                'existing `<session>/<step>` block — **do not** output the same block a second '
+                'time.\n'
+                '- **Isolated shell:** Each block runs in a fresh `bash` process starting in '
+                '`Workdir` (`cd` and shell variables do not persist across blocks).\n'
+                '- **Unknown session only:** Only if the chat started without a `Session:` / `Next '
+                'block:` header, omit `<session>/<step>` on the first block (`{cmd} '
+                "<<'RUN_BLOCK'`). Never guess `s1/1`.\n"
+                '- **Focused task handoff:** To build a new session context bundle (`0.txt`) for a '
+                'focused task chat, run `{cmd} --start -p "<task prompt>" [file ...]`.\n'
+                '\n'
+                '### Fixing a Failed Block (`--fix <session>/<target>`)\n'
+                '\n'
+                'When a long block fails on a small typo and re-running from scratch is safe '
+                '(idempotent), patch the previous script via Python (`text` holds the target '
+                "block's script) instead of rewriting the whole block:\n"
+                '\n'
+                '```bash\n'
+                "{cmd} --fix s1/1 <<'RUN_FIX'\n"
+                "old = 'wrong_command'\n"
+                "new = 'right_command'\n"
+                'assert text.count(old) == 1\n'
+                'text = text.replace(old, new, 1)\n'
+                'RUN_FIX\n'
+                '```\n'
+                '\n'
+                'If the failed run already partially changed state and is not idempotent, use the '
+                'next sequential step (`s1/2`) instead of `--fix`.\n',
+ 'agents_pwsh': '## Terminal blocks (`{cmd}` v{version})\n'
+                '\n'
+                'You have no direct shell access. To run commands, end your reply with a `{cmd}` '
+                'Markdown code block in this exact format:\n'
+                '\n'
+                '```powershell\n'
+                "@'\n"
+                'git status -sb\n'
+                "'@ | {cmd} s1/1\n"
+                '```\n'
+                '\n'
+                '### CRITICAL — STRICT LAYOUT & MARKDOWN FENCE RULES\n'
+                '\n'
+                '1. **ONE BLOCK PER MESSAGE, ALWAYS AT THE VERY END (BATCH COMMANDS INSIDE IT):**\n'
+                '   - Output **at most ONE** `{cmd}` block per reply (never two, never "step 1 / '
+                'step 2").\n'
+                '   - Inside that single block, you can run **as many commands, file reads, '
+                'scripts, and checks as needed** — batch related steps into one block instead of '
+                'splitting them across multiple turns.\n'
+                '   - The closing fence of the `{cmd}` block must be the **very last line of your '
+                'reply** — output **zero trailing text or characters** after it and stop '
+                'generating immediately.\n'
+                '2. **COLUMN-0 FENCES & SEPARATE-LINE HEREDOC TERMINATOR:**\n'
+                '   - Leave an **empty line** immediately before the opening `powershell` fence.\n'
+                "   - Start the opening `powershell` fence, `@'`, `'@ | {cmd} ...`, and the "
+                'closing fence at **column 0** (no leading spaces, no list indentation, no `>` '
+                'blockquotes).\n'
+                "   - `'@ | {cmd} ...` must be on its **own line**, and the closing fence must be "
+                'on the **next line**.\n'
+                '   - If you include any other code blocks earlier in your explanation, make sure '
+                'their closing fences are properly closed before the `{cmd}` block starts.\n'
+                '3. **NO INNER TRIPLE BACKTICKS OR HEREDOC DELIMITERS (NEVER BREAK THE FENCE):**\n'
+                '   - **Never** write three consecutive backticks anywhere inside the script body '
+                '(not in strings, comments, or nested heredocs) — that prematurely closes the '
+                'Markdown code block in the chat UI and truncates the script!\n'
+                "   - **Never** write literal `'@` at column 0 inside the script body — PowerShell "
+                'will terminate the outer here-string early!\n'
+                '   - If your script needs triple backticks or heredoc markers (e.g. when '
+                'generating Markdown files or tests), build them dynamically:\n'
+                "     - **Python:** `F3 = chr(96) * 3`, `RB = 'RUN_' + 'BLOCK'`\n"
+                '     - **Bash:** `F3=$(printf \'\\140\\140\\140\')`, `RB=\'RUN_\'"BLOCK"`\n'
+                '\n'
+                '### Session & Step Numbering (`<session>/<step>`)\n'
+                '\n'
+                '- **Standard block:** Use `Next block: <session>/<step>` from the session header '
+                '(e.g. `s1/1`), then increment the step sequentially (`s1/2`, `s1/3`, ...) after '
+                'each `[<session>/<step>]` result.\n'
+                '- **No step reuse:** Every executed block consumes its step number, even if it '
+                'fails. Never reuse or skip a step number.\n'
+                '- **No duplicate unexecuted blocks:** If the user asks a question or requests an '
+                'explanation about a block you already output in the previous reply and the script '
+                'itself does not need to change, answer in prose and tell the user to run that '
+                'existing `<session>/<step>` block — **do not** output the same block a second '
+                'time.\n'
+                '- **Isolated shell:** Each block runs in a fresh `pwsh` process starting in '
+                '`Workdir` (`cd` and shell variables do not persist across blocks).\n'
+                '- **Unknown session only:** Only if the chat started without a `Session:` / `Next '
+                "block:` header, omit `<session>/<step>` on the first block (`@' ... '@ | {cmd}`). "
+                'Never guess `s1/1`.\n'
+                '- **Focused task handoff:** To build a new session context bundle (`0.txt`) for a '
+                'focused task chat, run `{cmd} --start -p "<task prompt>" [file ...]`.\n'
+                '\n'
+                '### Fixing a Failed Block (`--fix <session>/<target>`)\n'
+                '\n'
+                'When a long block fails on a small typo and re-running from scratch is safe '
+                '(idempotent), patch the previous script via Python (`text` holds the target '
+                "block's script) instead of rewriting the whole block:\n"
+                '\n'
+                '```powershell\n'
+                "@'\n"
+                "old = 'wrong_command'\n"
+                "new = 'right_command'\n"
+                'assert text.count(old) == 1\n'
+                'text = text.replace(old, new, 1)\n'
+                "'@ | {cmd} --fix s1/1\n"
+                '```\n'
+                '\n'
+                'If the failed run already partially changed state and is not idempotent, use the '
+                'next sequential step (`s1/2`) instead of `--fix`.\n'}
+
+EMBEDDED_RULES: dict[str, tuple[str, str]] = {'start': ('Session start priority, date formats ({chat_date_fmt:DD/MM/YYYY}), and task handoff',
+           '- **Start & task handoff:** Uncommitted work or an active pipeline comes before '
+           'unrelated work — ask what to do first. Format dates to the user in chat as '
+           '`{chat_date_fmt:DD/MM/YYYY}`; in files, commits, and logs use ISO `YYYY-MM-DD`. When '
+           'starting a focused task chat, build a context bundle via `run_block --start -p "Let\'s '
+           'work on task <ID>..." [file ...]`.'),
+ 'secrets': ('Progress reporting to stderr and strict credential/secret protection',
+             '- **Progress & secrets:** Print periodic progress to `stderr` on long waits. Never '
+             'print secret files/tokens or enable `set -x` around credentials; if a credential is '
+             'ever pasted into chat, tell the user at once to rotate it.'),
+ 'plan': ('Read code before guessing, agree on high-level plan before coding, no duplicate blocks',
+          '- **Investigate & Plan:** Ask to see or read code rather than guessing it, and say "not '
+          'known" rather than filling a gap. Always state a high-level plan in chat (target '
+          'outcome, rules, and behavior — not a line-by-line code diff or replacement dump) and '
+          'wait for user agreement before writing code.\n'
+          '- **No duplicate unexecuted blocks:** If the user asks a question or requests an '
+          'explanation about a block you already output in the previous reply and the script '
+          'itself does not need to change, answer in prose and tell the user to run that existing '
+          '`<session>/<step>` block — **do not** output the same block a second time.'),
+ 'edit': ('Unique anchor checks (count == 1), CLI -h/--help hygiene, and pre-commit test execution',
+          '- **Edit & pre-commit checks:** When editing files programmatically, assert that each '
+          'search anchor occurs uniquely (`count == 1`) before writing, and avoid raw multiline '
+          'strings that could break the chat Markdown fence. Every CLI tool must print usage on '
+          '`-h`/`--help` and exit `0` doing nothing; update `README.md` and `-h`/`--help` in the '
+          'same commit when changing behavior, flags, or config options. Before committing, always '
+          "run syntax/linter checks on modified files and run the project's local test suite "
+          '(offline unit tests) so untested or broken code is never committed.'),
+ 'diff-review': ('Two-step self-reviewed diff before commit and guarded commit blocks (set -euo '
+                 'pipefail)',
+                 '- **Self-reviewed diff before commit:** A block that edits files does **not** '
+                 'commit. It runs syntax/linter checks and local tests, and prints the working '
+                 'tree status and full diff.\n'
+                 '  - When the user pastes the output, **the model itself must audit the full '
+                 'diff** against all project rules (no leftover names/dead code, single '
+                 'responsibility and directory boundaries, updated `README.md` entries, `-h` '
+                 'usage). If any issue is found in the diff, fix it in the next block and print '
+                 'the new diff — repeat until the diff is completely clean.\n'
+                 '  - Once the model verifies that the printed diff is clean and tests pass, '
+                 'immediately give the commit block in the same reply without asking the user to '
+                 'review or confirm the diff.\n'
+                 '  - *Exception:* a trivial text-only change (1–2 lines, no code) may edit, show '
+                 'the diff, and commit in one block.\n'
+                 '- **Guarded commit blocks:** Because files on disk may change between turns, '
+                 'every block that commits or publishes changes must start with `set -euo '
+                 "pipefail` and re-run the project's fast syntax/linter checks and local unit "
+                 'tests immediately before the commit command, so any failure aborts the block '
+                 'before committing.'),
+ 'external': ('Clean external text (no task IDs, step numbers, or unrelated tools) and two-step '
+              'external writes',
+              '- **Clean external text & two-step external changes:** In commit messages, MR/PR '
+              'descriptions, Slack, and status updates, describe changes in words **without '
+              'internal task IDs** (e.g. `F1`, `T2`), **session/step numbers** (e.g. `s1/2`), **or '
+              'local agent workflow tools unrelated to the repository**. Changes outside the '
+              'repository (remote branches, MR descriptions, Slack) follow a two-step rule: first '
+              'a read-only preview block saving what it replaces, then the write block after '
+              'agreement.'),
+ 'end': ('End-of-session summary, uncommitted work check, docs update, and todo_md resume',
+         '- **Ending a session:** When the user says "end session" or asks to stop: (1) give a '
+         'concise session summary in chat (tasks completed, key changes, commit identifiers, and '
+         'what remains); (2) report uncommitted or unpushed changes; (3) record durable decisions '
+         'in `README.md` or `AGENTS.md`; (4) update `Resume` in `TODO.md` (`todo_md resume` and '
+         '`todo_md check`) if used.'),
+ 'lang': ('Language policy for chat prose vs blocks, code, docs, and commits ({lang:English})',
+          '- **Language policy:** Write chat prose outside blocks in {chat_lang:the language the '
+          'user writes in}; keep everything inside blocks (commands, comments, `echo` output) as '
+          'well as documentation, code, files, and commit messages in **{lang:English}** '
+          '(translate any quote before inserting it into a file).'),
+ 'git': ('Git staging (git add -N), diff inspection, and destructive operation guards',
+         '- **Git workflow & safety:** Mark new files with `git add -N` before printing `git '
+         'status --porcelain` and `git diff HEAD` in the diff-review step. Without explicit user '
+         'approval each time: **no `git push --force`, no `git reset --hard`, no deleting a branch '
+         'or tag, no rewriting a pushed commit.** Push commits at the end of a task/session (to '
+         '`origin {main_branch:main}` unless on a feature branch), and report unpushed commits or '
+         'unmerged branches at session end.'),
+ 'cvs': ('CVS diff inspection (cvs -nq update, cvs diff -u), explicit file commits, and safety '
+         'guards',
+         '- **CVS workflow & safety:** Inspect status without modifying the working tree via `cvs '
+         '-nq update` and review full changes via `cvs diff -u`. Always pass explicit file paths '
+         'to `cvs commit -m "..." file1 file2` rather than committing the whole tree blindly, so '
+         'unrelated modified files are never committed by mistake. Without explicit user approval '
+         'each time: **no `cvs update -C` (discarding local changes), no `cvs remove -f`, no '
+         'deleting/moving tags (`cvs tag -d` / `-F`), and no `cvs admin` history modifications.**'),
+ 'semver': ('Semantic Versioning and release tagging rules (PATCH / MINOR / MAJOR)',
+            '- **Versioning & releases (SemVer):**\n'
+            '  - `PATCH` (`0.Y.Z+1`) — bugfixes, UI/box tweaks, and '
+            '`--agents`/`--agents-rules`/`--help`/docs updates.\n'
+            '  - `MINOR` (`0.Y+1.0`) — new CLI commands/flags or config options.\n'
+            '  - `MAJOR` (`X+1.0.0`) — breaking changes or only when explicitly requested.\n'
+            '  - Keep `VERSION` and in-code `VERSION = "..."` in sync, reinstall locally if '
+            'applicable, commit, push to `origin {main_branch:main}`, and push an annotated '
+            'release tag (`git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z`).'),
+ 'python-cli': ('Zero-dependency Python 3 CLI invariants ({py_min:3.9}+) and shell/Python '
+                'pre-commit checks',
+                '- **Python CLI engineering invariants:** Use only the Python 3 standard library '
+                '(`from __future__ import annotations` at top of Python files for Python '
+                '{py_min:3.9}+ compatibility). Every flag/command must be documented in '
+                '`-h`/`--help` (which exits `0` doing nothing) and covered by unit tests. '
+                'Syntax-check shell scripts with `bash -n` and `shellcheck -S warning`, verify '
+                'Python syntax with `ast.parse`, and run `tests/test_*.py` unit tests before '
+                'committing.'),
+ 'single-file-build': ('Modular src/ development compiled into a standalone single-file binary '
+                       '({build_cmd:python3 build.py})',
+                       '- **Single-file build from modular `src/`:** Edit source modules and '
+                       'templates under `src/` rather than hand-editing the generated standalone '
+                       'script. After any change under `src/`, run `{build_cmd:python3 build.py}` '
+                       'to regenerate the standalone executable and verify `{check_cmd:python3 '
+                       'build.py --check}` before committing.')}
+
+EMBEDDED_PRESETS: dict[str, tuple[str, list[str]]] = {'workflow': ('Core VCS-agnostic agent workflow (start -> plan -> edit -> diff-review -> end)',
+              ['start', 'secrets', 'plan', 'edit', 'diff-review', 'external', 'end']),
+ 'default': ('Default rules (workflow + lang + auto-detected git/cvs)',
+             ['workflow', 'lang', 'auto-vcs']),
+ 'python-tool': ('Python CLI utility stack (workflow + lang + git + semver + python-cli)',
+                 ['workflow', 'lang', 'git', 'semver', 'python-cli'])}
+
+
+def agents_markdown(prog: str | None = None) -> str:
+    cmd = prog or prog_name()
+    tpl_key = "agents_pwsh" if _is_powershell() else "agents_bash"
+    tpl = EMBEDDED_TEMPLATES[tpl_key]
+    return tpl.format(cmd=cmd, version=VERSION).rstrip()
+
+
+def rules_dir_path() -> Path:
+    env_dir = os.environ.get("RUN_BLOCK_RULES_DIR")
+    if env_dir:
+        return Path(env_dir).expanduser()
+    return config_file_path().parent / "rules"
+
+
+def _discover_user_rules() -> dict[str, tuple[str, str]]:
+    rdir = rules_dir_path()
+    if not rdir.is_dir():
+        return {}
+    out: dict[str, tuple[str, str]] = {}
+    try:
+        for p in sorted(rdir.glob("*.md")):
+            if p.is_file():
+                raw = p.read_text(encoding="utf-8", errors="replace").splitlines()
+                desc = f"Custom rule ({p.name})"
+                body_lines = raw
+                if raw and raw[0].startswith("# Description:"):
+                    desc = raw[0].split(":", 1)[1].strip()
+                    body_lines = raw[1:]
+                out[p.stem.lower()] = (desc, "\n".join(body_lines).strip())
+    except OSError:
+        pass
+    return out
+
+
+def _discover_presets() -> dict[str, tuple[str, list[str]]]:
+    presets: dict[str, tuple[str, list[str]]] = {
+        k: (desc, list(items)) for k, (desc, items) in EMBEDDED_PRESETS.items()
+    }
+    cfg = parse_config_file()
+    for k, v in cfg.items():
+        if k.startswith("rules_preset.") and v.strip():
+            pname = k[len("rules_preset."):].strip().lower()
+            items = [x.strip() for x in re.split(r"[,\s]+", v.strip()) if x.strip()]
+            if pname and items:
+                presets[pname] = (f"Custom preset from config ({v.strip()})", items)
+    return presets
+
+
+RULE_VAR_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*):([^{}]*)\}")
+
+
+def _render_rule_vars(text: str, vars_map: dict[str, str]) -> str:
+    return RULE_VAR_RE.sub(lambda m: vars_map.get(m.group(1), m.group(2)), text)
+
+
+def _detect_vcs_rule(work_dir: Path | None = None) -> str | None:
+    wdir = work_dir if work_dir is not None else get_work_dir()
+    if (wdir / ".git").exists():
+        return "git"
+    if (wdir / "CVS").is_dir():
+        return "cvs"
+    return None
+
+
+def resolve_rules_selection(
+    args: list[str] | None = None,
+    work_dir: Path | None = None,
+) -> tuple[list[str], dict[str, str], dict[str, tuple[str, str]]]:
+    prog = prog_name()
+    user_rules = _discover_user_rules()
+    all_rules: dict[str, tuple[str, str]] = {**EMBEDDED_RULES, **user_rules}
+    presets = _discover_presets()
+
+    tokens: list[str] = []
+    excluded: set[str] = set()
+    vars_map: dict[str, str] = {}
+
+    for item in args or []:
+        s = item.strip()
+        if not s:
+            continue
+        if "=" in s and not s.startswith("-"):
+            k, v = s.split("=", 1)
+            k_clean = k.strip()
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k_clean):
+                raise SystemExit(f"{prog}: invalid rule variable name {k_clean!r} in {s!r}")
+            vars_map[k_clean] = v.strip()
+        elif s.startswith("-") and len(s) > 1 and not s.startswith("--"):
+            excluded.add(s[1:].strip().lower())
+        else:
+            tokens.append(s.lower())
+
+    if not tokens:
+        tokens = ["default"]
+
+    expanded: list[str] = []
+
+    def expand_token(tok: str, stack: set[str]) -> None:
+        if tok == "auto-vcs":
+            vcs = _detect_vcs_rule(work_dir)
+            if vcs and vcs not in expanded:
+                expanded.append(vcs)
+            return
+        if tok == "all":
+            for rk in all_rules:
+                if rk not in expanded:
+                    expanded.append(rk)
+            return
+        if tok in presets and tok not in user_rules:
+            if tok in stack:
+                return
+            for sub in presets[tok][1]:
+                if "=" in sub and not sub.startswith("-"):
+                    k, v = sub.split("=", 1)
+                    vars_map.setdefault(k.strip(), v.strip())
+                elif sub.startswith("-") and len(sub) > 1:
+                    excluded.add(sub[1:].strip().lower())
+                else:
+                    expand_token(sub.lower(), stack | {tok})
+            return
+        if tok in all_rules:
+            if tok not in expanded:
+                expanded.append(tok)
+            return
+        avail = sorted(set(presets.keys()) | set(all_rules.keys())) + ["all"]
+        raise SystemExit(
+            f"{prog}: unknown rule or preset {tok!r} (available: {', '.join(avail)})"
+        )
+
+    for t in tokens:
+        expand_token(t, set())
+
+    final_rules = [r for r in expanded if r not in excluded]
+    return final_rules, vars_map, all_rules
+
+
+def rules_markdown(args: list[str] | None = None, work_dir: Path | None = None) -> str:
+    final_rules, vars_map, all_rules = resolve_rules_selection(args, work_dir=work_dir)
+    blocks: list[str] = []
+    for r in final_rules:
+        body = all_rules[r][1].strip()
+        if body:
+            blocks.append(_render_rule_vars(body, vars_map))
+    hdr = f"## Agent Engineering Rules ({', '.join(final_rules)})"
+    return hdr + "\n\n" + "\n".join(blocks)
+
+
+def cmd_rules(argv: list[str]) -> int:
+    prog = prog_name()
+    if any(a in ("--list", "-l") for a in argv):
+        if len(argv) > 1:
+            raise SystemExit(f"{prog}: usage: {prog} --agents-rules [ITEM ... | -RULE | KEY=VAL | --list]")
+        user_rules = _discover_user_rules()
+        presets = _discover_presets()
+        rdir = rules_dir_path()
+        sys.stdout.write("Rule presets (groups of rules):\n")
+        for k, (desc, items) in presets.items():
+            sys.stdout.write(f"  {k:<18}  {desc}\n")
+            sys.stdout.write(f"  {'':<18}    -> {', '.join(items)}\n")
+        sys.stdout.write("  all                 Include all built-in and custom atomic rules\n\n")
+        sys.stdout.write("Atomic rules (usable individually, in presets, or excluded via -<rule>):\n")
+        for k, (desc, _) in EMBEDDED_RULES.items():
+            override = " (overridden by user file)" if k in user_rules else ""
+            sys.stdout.write(f"  {k:<18}  {desc}{override}\n")
+        custom_only = {k: v for k, v in user_rules.items() if k not in EMBEDDED_RULES}
+        sys.stdout.write(f"\nCustom rule files ({rdir}):\n")
+        if custom_only:
+            for k, (desc, _) in custom_only.items():
+                sys.stdout.write(f"  {k:<18}  {desc}\n")
+        else:
+            sys.stdout.write("  (none — add <rule>.md files to this directory to define custom rules)\n")
+        return 0
+    for a in argv:
+        if a.startswith("--"):
+            raise SystemExit(f"{prog}: usage: {prog} --agents-rules [ITEM ... | -RULE | KEY=VAL | --list]")
+    sys.stdout.write(rules_markdown(argv) + "\n")
+    return 0
 
 
 # --- Detailed pre-execution block plan and safety scanner ---
@@ -1296,6 +1505,197 @@ def confirm_execution(
         return True
 
 
+# --- Built-in token and byte statistics ---
+_ENC = None
+_ENC_TRIED = False
+
+
+def gpt_encoder():
+    global _ENC, _ENC_TRIED
+    if not _ENC_TRIED:
+        _ENC_TRIED = True
+        try:
+            import tiktoken  # type: ignore[import-not-found]
+            _ENC = tiktoken.get_encoding("o200k_base")
+        except Exception:
+            _ENC = None
+    return _ENC
+
+
+def count_tokens(data: bytes) -> dict[str, int | bool]:
+    text = data.decode("utf-8", "replace")
+    chars = len(text)
+    enc = gpt_encoder()
+    if enc is not None:
+        gpt = len(enc.encode(text, disallowed_special=()))
+    else:
+        gpt = math.ceil(chars / 4)
+    return {
+        "bytes": len(data),
+        "claude": math.ceil(chars / 3.5),
+        "gpt": gpt,
+        "gpt_exact": enc is not None,
+        "gemini": math.ceil(chars / 4),
+    }
+
+
+def format_stats(data: bytes) -> str:
+    s = count_tokens(data)
+    mark = "" if s["gpt_exact"] else "~"
+    size, claude, gpt, gemini = s["bytes"], s["claude"], s["gpt"], s["gemini"]
+    return f"Size: {size:,} bytes | Tokens: Claude ~{claude:,} | GPT {mark}{gpt:,} | Gemini ~{gemini:,}"
+
+
+def stats_line(path: Path) -> str | None:
+    enabled, _ = get_setting("token_stats")
+    if enabled == "false":
+        return None
+    try:
+        return format_stats(path.read_bytes())
+    except Exception:
+        return None
+
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+CR_LINE_RE = re.compile(r"[^\n]*\r(?!\n)")
+
+
+def resolve_clipboard_target(out_path: Path, full_output: str) -> Path:
+    matches = re.findall(
+        r"^\[[A-Za-z0-9._-]+\] Attach: (\S+)\s*$",
+        full_output,
+        flags=re.MULTILINE,
+    )
+    if matches:
+        candidate = Path(matches[-1])
+        if candidate.is_file():
+            return candidate
+    return out_path
+
+
+def clipboard_command(out_path: Path) -> tuple[list[str], str] | None:
+    if shutil.which("xclip") and os.environ.get("DISPLAY"):
+        return ["xclip", "-selection", "clipboard"], f"xclip -selection clipboard < {out_path}"
+    if shutil.which("wl-copy") and os.environ.get("WAYLAND_DISPLAY"):
+        return ["wl-copy"], f"wl-copy < {out_path}"
+    if shutil.which("pbcopy"):
+        return ["pbcopy"], f"pbcopy < {out_path}"
+    if shutil.which("xsel") and os.environ.get("DISPLAY"):
+        return ["xsel", "--clipboard", "--input"], f"xsel --clipboard --input < {out_path}"
+    if shutil.which("clip.exe"):
+        return ["clip.exe"], f"clip.exe < {out_path}"
+    return None
+
+
+def copy_file_to_clipboard(cmd: list[str], out_path: Path) -> bool:
+    try:
+        with open(out_path, "rb") as f_in:
+            r = subprocess.run(
+                cmd,
+                stdin=f_in,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def display_width(text: str) -> int:
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in text)
+
+
+def pad_box_line(text: str, inner_width: int) -> str:
+    pad = max(0, inner_width - display_width(text))
+    return f"│ {text}{' ' * pad} │"
+
+
+def format_clipboard_box(
+    label: str, out_path: Path, ok: bool = True, rc: int | None = None, stats: str | None = None
+) -> tuple[str, int, int]:
+    if rc is not None and rc != 0:
+        state = f"END (exit {rc})"
+    else:
+        state = "END"
+    title = f" [{label}] {state} "
+    line2 = f"-> Press Enter to copy {out_path} to clipboard (v to view, Esc to skip)"
+    copied_line = f"✓ Copied {out_path} to clipboard."
+    stats_width = display_width(stats) if stats else 0
+    inner_width = max(
+        display_width(title),
+        display_width(line2),
+        display_width(copied_line),
+        stats_width,
+    )
+    dashes = max(1, inner_width + 2 - display_width(title) - 1)
+    top = f"┌─{title}{'─' * dashes}┐"
+    bottom = f"└─{'─' * inner_width}─┘"
+    rows = [pad_box_line(line2, inner_width)]
+    if stats:
+        rows.insert(0, pad_box_line(stats, inner_width))
+    box = "\n".join([top, *rows, bottom])
+    cursor_col_offset = 2 + display_width(line2)
+    return box, inner_width, cursor_col_offset
+
+
+def offer_clipboard_copy(
+    label: str, out_path: Path, ok: bool = True, rc: int | None = None
+) -> None:
+    if in_run_block():
+        return
+    mode = clipboard_mode()
+    if mode == "never":
+        return
+    clip = clipboard_command(out_path)
+    if clip is None:
+        return
+    cmd, cmd_str = clip
+    if mode == "auto":
+        if copy_file_to_clipboard(cmd, out_path):
+            sys.stdout.write(f"✓ Copied {out_path} to clipboard.\n")
+        else:
+            sys.stdout.write(f"[{label}] clipboard: {cmd_str}\n")
+        sys.stdout.flush()
+        return
+    if not sys.stdout.isatty():
+        sys.stdout.write(f"[{label}] clipboard: {cmd_str}\n")
+        sys.stdout.flush()
+        return
+    box, inner_width, cursor_offset = format_clipboard_box(
+        label, out_path, ok=ok, rc=rc, stats=stats_line(out_path)
+    )
+    bottom = f"└─{'─' * inner_width}─┘"
+    line2 = f"-> Press Enter to copy {out_path} to clipboard (v to view, Esc to skip)"
+    try:
+        tty_w, tty_r = open_tty()
+        with tty_w, tty_r:
+            tty_w.write(f"\n{box}\r\033[1A\033[{cursor_offset}C")
+            tty_w.flush()
+            while True:
+                action = read_clipboard_key(tty_r)
+                if action == "view":
+                    if out_path.is_file():
+                        open_script_in_editor(out_path, tty_r, tty_w)
+                        tty_w.write(f"\r{pad_box_line(line2, inner_width)}\n{bottom}\r\033[1A\033[{cursor_offset}C")
+                        tty_w.flush()
+                    continue
+                if action == "copy":
+                    if copy_file_to_clipboard(cmd, out_path):
+                        status_line = f"✓ Copied {out_path} to clipboard."
+                    else:
+                        status_line = f"✗ Clipboard copy failed; run: {cmd_str}"
+                else:
+                    status_line = "Skipped clipboard copy."
+                break
+            tty_w.write(f"\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
+            tty_w.flush()
+    except OSError:
+        sys.stdout.write(f"[{label}] clipboard: {cmd_str}\n")
+        sys.stdout.flush()
+
+
 def ensure_base() -> Path:
     BASE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
@@ -1405,61 +1805,6 @@ def not_run_exit(label: str, sdir: Path, step_name: str, out_path: Path, msg: st
     except Exception:
         pass
     return rc
-
-
-# --- Built-in token and byte statistics ---
-_ENC = None
-_ENC_TRIED = False
-
-
-def gpt_encoder():
-    global _ENC, _ENC_TRIED
-    if not _ENC_TRIED:
-        _ENC_TRIED = True
-        try:
-            import tiktoken  # type: ignore[import-not-found]
-            _ENC = tiktoken.get_encoding("o200k_base")
-        except Exception:
-            _ENC = None
-    return _ENC
-
-
-def count_tokens(data: bytes) -> dict[str, int | bool]:
-    text = data.decode("utf-8", "replace")
-    chars = len(text)
-    enc = gpt_encoder()
-    if enc is not None:
-        gpt = len(enc.encode(text, disallowed_special=()))
-    else:
-        gpt = math.ceil(chars / 4)
-    return {
-        "bytes": len(data),
-        "claude": math.ceil(chars / 3.5),
-        "gpt": gpt,
-        "gpt_exact": enc is not None,
-        "gemini": math.ceil(chars / 4),
-    }
-
-
-def format_stats(data: bytes) -> str:
-    s = count_tokens(data)
-    mark = "" if s["gpt_exact"] else "~"
-    size, claude, gpt, gemini = s["bytes"], s["claude"], s["gpt"], s["gemini"]
-    return f"Size: {size:,} bytes | Tokens: Claude ~{claude:,} | GPT {mark}{gpt:,} | Gemini ~{gemini:,}"
-
-
-def stats_line(path: Path) -> str | None:
-    enabled, _ = get_setting("token_stats")
-    if enabled == "false":
-        return None
-    try:
-        return format_stats(path.read_bytes())
-    except Exception:
-        return None
-
-
-ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-CR_LINE_RE = re.compile(r"[^\n]*\r(?!\n)")
 
 
 def run_script(
@@ -1614,217 +1959,6 @@ def run_script(
     return rc
 
 
-def resolve_clipboard_target(out_path: Path, full_output: str) -> Path:
-    matches = re.findall(
-        r"^\[[A-Za-z0-9._-]+\] Attach: (\S+)\s*$",
-        full_output,
-        flags=re.MULTILINE,
-    )
-    if matches:
-        candidate = Path(matches[-1])
-        if candidate.is_file():
-            return candidate
-    return out_path
-
-
-def clipboard_command(out_path: Path) -> tuple[list[str], str] | None:
-    if shutil.which("xclip") and os.environ.get("DISPLAY"):
-        return ["xclip", "-selection", "clipboard"], f"xclip -selection clipboard < {out_path}"
-    if shutil.which("wl-copy") and os.environ.get("WAYLAND_DISPLAY"):
-        return ["wl-copy"], f"wl-copy < {out_path}"
-    if shutil.which("pbcopy"):
-        return ["pbcopy"], f"pbcopy < {out_path}"
-    if shutil.which("xsel") and os.environ.get("DISPLAY"):
-        return ["xsel", "--clipboard", "--input"], f"xsel --clipboard --input < {out_path}"
-    if shutil.which("clip.exe"):
-        return ["clip.exe"], f"clip.exe < {out_path}"
-    return None
-
-
-def copy_file_to_clipboard(cmd: list[str], out_path: Path) -> bool:
-    try:
-        with open(out_path, "rb") as f_in:
-            r = subprocess.run(
-                cmd,
-                stdin=f_in,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                check=False,
-            )
-        return r.returncode == 0
-    except Exception:
-        return False
-
-
-def display_width(text: str) -> int:
-    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in text)
-
-
-def pad_box_line(text: str, inner_width: int) -> str:
-    pad = max(0, inner_width - display_width(text))
-    return f"│ {text}{' ' * pad} │"
-
-
-def format_clipboard_box(
-    label: str, out_path: Path, ok: bool = True, rc: int | None = None, stats: str | None = None
-) -> tuple[str, int, int]:
-    if rc is not None and rc != 0:
-        state = f"END (exit {rc})"
-    else:
-        state = "END"
-    title = f" [{label}] {state} "
-    line2 = f"-> Press Enter to copy {out_path} to clipboard (v to view, Esc to skip)"
-    copied_line = f"✓ Copied {out_path} to clipboard."
-    stats_width = display_width(stats) if stats else 0
-    inner_width = max(
-        display_width(title),
-        display_width(line2),
-        display_width(copied_line),
-        stats_width,
-    )
-    dashes = max(1, inner_width + 2 - display_width(title) - 1)
-    top = f"┌─{title}{'─' * dashes}┐"
-    bottom = f"└─{'─' * inner_width}─┘"
-    rows = [pad_box_line(line2, inner_width)]
-    if stats:
-        rows.insert(0, pad_box_line(stats, inner_width))
-    box = "\n".join([top, *rows, bottom])
-    cursor_col_offset = 2 + display_width(line2)
-    return box, inner_width, cursor_col_offset
-
-
-def offer_clipboard_copy(
-    label: str, out_path: Path, ok: bool = True, rc: int | None = None
-) -> None:
-    if in_run_block():
-        return
-    mode = clipboard_mode()
-    if mode == "never":
-        return
-    clip = clipboard_command(out_path)
-    if clip is None:
-        return
-    cmd, cmd_str = clip
-    if mode == "auto":
-        if copy_file_to_clipboard(cmd, out_path):
-            sys.stdout.write(f"✓ Copied {out_path} to clipboard.\n")
-        else:
-            sys.stdout.write(f"[{label}] clipboard: {cmd_str}\n")
-        sys.stdout.flush()
-        return
-    if not sys.stdout.isatty():
-        sys.stdout.write(f"[{label}] clipboard: {cmd_str}\n")
-        sys.stdout.flush()
-        return
-    box, inner_width, cursor_offset = format_clipboard_box(
-        label, out_path, ok=ok, rc=rc, stats=stats_line(out_path)
-    )
-    bottom = f"└─{'─' * inner_width}─┘"
-    line2 = f"-> Press Enter to copy {out_path} to clipboard (v to view, Esc to skip)"
-    try:
-        tty_w, tty_r = open_tty()
-        with tty_w, tty_r:
-            tty_w.write(f"\n{box}\r\033[1A\033[{cursor_offset}C")
-            tty_w.flush()
-            while True:
-                action = read_clipboard_key(tty_r)
-                if action == "view":
-                    if out_path.is_file():
-                        open_script_in_editor(out_path, tty_r, tty_w)
-                        tty_w.write(f"\r{pad_box_line(line2, inner_width)}\n{bottom}\r\033[1A\033[{cursor_offset}C")
-                        tty_w.flush()
-                    continue
-                if action == "copy":
-                    if copy_file_to_clipboard(cmd, out_path):
-                        status_line = f"✓ Copied {out_path} to clipboard."
-                    else:
-                        status_line = f"✗ Clipboard copy failed; run: {cmd_str}"
-                else:
-                    status_line = "Skipped clipboard copy."
-                break
-            tty_w.write(f"\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
-            tty_w.flush()
-    except OSError:
-        sys.stdout.write(f"[{label}] clipboard: {cmd_str}\n")
-        sys.stdout.flush()
-
-
-def parse_version_from_source(source: str) -> str | None:
-    m = re.search(r'^VERSION\s*=\s*["\x27]([^"\x27]+)["\x27]', source, flags=re.MULTILINE)
-    return m.group(1) if m else None
-
-
-def version_tuple(v: str) -> tuple[int, ...]:
-    parts = []
-    for p in re.split(r"[^0-9]+", v):
-        if p:
-            parts.append(int(p))
-    return tuple(parts)
-
-
-def fetch_remote_script(url: str | None = None) -> str:
-    cfg_url, _ = get_setting("update_url")
-    target_url = url or cfg_url
-    if target_url.startswith(("http://", "https://")) and "?" not in target_url:
-        target_url = f"{target_url}?t={int(time.time())}"
-    req = urllib.request.Request(
-        target_url,
-        headers={"User-Agent": f"run_block/{VERSION}", "Cache-Control": "no-cache", "Pragma": "no-cache"},
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        data = resp.read().decode("utf-8")
-    if REPO_MARKER and REPO_MARKER not in data:
-        raise ValueError("downloaded file does not contain expected repository marker")
-    ast.parse(data)
-    return data
-
-
-def cmd_check_update(url: str | None = None) -> int:
-    prog = prog_name()
-    try:
-        remote_src = fetch_remote_script(url)
-    except Exception as exc:
-        sys.stderr.write(f"{prog}: failed to check for updates: {exc}\n")
-        return 1
-    remote_ver = parse_version_from_source(remote_src) or "unknown"
-    if version_tuple(remote_ver) > version_tuple(VERSION):
-        sys.stdout.write(f"{prog}: update available: {VERSION} -> {remote_ver} (run '{prog} --update')\n")
-    else:
-        sys.stdout.write(f"{prog} {VERSION} is up to date (remote: {remote_ver}).\n")
-    return 0
-
-
-def cmd_update(force: bool = False, url: str | None = None, target_path: Path | None = None) -> int:
-    prog = prog_name()
-    dest = target_path or Path(__file__).resolve()
-    try:
-        remote_src = fetch_remote_script(url)
-    except Exception as exc:
-        sys.stderr.write(f"{prog}: update failed: {exc}\n")
-        return 1
-    remote_ver = parse_version_from_source(remote_src) or "unknown"
-    if not force and version_tuple(remote_ver) <= version_tuple(VERSION):
-        sys.stdout.write(f"{prog} {VERSION} is already up to date.\n")
-        return 0
-    try:
-        tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{dest.name}.", dir=str(dest.parent))
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                f.write(remote_src)
-            os.chmod(tmp_name, 0o755)
-            os.replace(tmp_name, dest)
-        except Exception:
-            if os.path.exists(tmp_name):
-                os.unlink(tmp_name)
-            raise
-    except Exception as exc:
-        sys.stderr.write(f"{prog}: could not write updated binary to {dest}: {exc}\n")
-        return 1
-    sys.stdout.write(f"{prog}: updated {VERSION} -> {remote_ver} ({dest})\n")
-    return 0
-
-
 def cmd_normal(ref: str, payload: str) -> int:
     session, step = parse_ref(ref, allow_fix_step=False)
     step_num = int(step)
@@ -1971,278 +2105,6 @@ def _find_latest_step(session: str | None = None) -> tuple[str, str]:
         if scripts:
             return sdir.name, scripts[-1]
     raise SystemExit(f"{prog_name()}: no saved blocks found in {base}")
-
-
-def default_start_template(prog: str | None = None) -> str:
-    cmd = prog or prog_name()
-    lines = [
-        f"# {START_FILE_NAME} — session context bundle specification for '{cmd} --start'",
-        "# Plain lines are file paths (read directly as UTF-8 relative to the project root).",
-        "# Lines starting with '$ ' (or '! ') are shell commands executed in the project directory.",
-        "",
-        f"$ {cmd} --agents",
-        f"$ {cmd} --agents-rules",
-        "",
-        "AGENTS.md",
-        "",
-        "$ git status -sb",
-        "$ git branch -vv",
-        "$ git log --oneline -10",
-        "",
-    ]
-    return "\n".join(lines)
-
-
-def cmd_init_start(force: bool = False, target_dir: Path | None = None) -> int:
-    prog = prog_name()
-    base_dir = target_dir if target_dir is not None else Path.cwd()
-    path = base_dir / START_FILE_NAME
-    if path.exists() and not force:
-        sys.stderr.write(f"{prog}: {path} already exists (use --force to overwrite)\n")
-        return 2
-    path.write_text(default_start_template(prog), encoding="utf-8")
-    sys.stdout.write(f"{prog}: wrote starter {START_FILE_NAME} to {path}\n")
-    return 0
-
-
-def find_start_file(work_dir: Path) -> tuple[Path | None, Path]:
-    cwd = Path.cwd().resolve()
-    wdir = work_dir.resolve()
-    # Walk from cwd up to work_dir (if cwd is inside work_dir)
-    if cwd == wdir or wdir in cwd.parents:
-        cur = cwd
-        while True:
-            candidate = cur / START_FILE_NAME
-            if candidate.is_file():
-                return candidate, cur
-            if cur == wdir or cur.parent == cur:
-                break
-            cur = cur.parent
-    wdir_candidate = wdir / START_FILE_NAME
-    if wdir_candidate.is_file():
-        return wdir_candidate, wdir
-    return None, wdir
-
-
-def parse_start_spec(text: str) -> list[tuple[str, str]]:
-    """Returns list of (kind, value) where kind is 'file' or 'cmd'."""
-    entries: list[tuple[str, str]] = []
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("$ ") or line.startswith("! "):
-            cmd_str = line[2:].strip()
-            if cmd_str:
-                entries.append(("cmd", cmd_str))
-        elif line in ("$", "!"):
-            continue
-        else:
-            entries.append(("file", line))
-    return entries
-
-
-def _run_start_command(cmd_str: str, cwd: Path) -> tuple[int, str]:
-    prog = prog_name()
-    self_path = str(Path(__file__).resolve())
-    # If the command invokes '<prog> --agents' directly, call our own agents_markdown() in-process
-    if re.fullmatch(rf"{re.escape(prog)}\s+--agents(?:-md)?", cmd_str) or re.fullmatch(r"run_block\s+--agents(?:-md)?", cmd_str):
-        return 0, agents_markdown(prog)
-    if re.match(rf"^(?:{re.escape(prog)}|run_block)\s+--(?:agents-)?rules(?:\s+.*)?$", cmd_str):
-        try:
-            parts = shlex.split(cmd_str)[2:]
-            if any(a in ("--list", "-l") for a in parts):
-                pass
-            else:
-                return 0, rules_markdown(parts).rstrip()
-        except SystemExit as exc:
-            return 1, str(exc)
-    if re.match(rf"^(?:{re.escape(prog)}|run_block)\s+--tree(?:\s+.*)?$", cmd_str):
-        try:
-            parts = shlex.split(cmd_str)[2:]
-            return 0, _tree_from_args(parts, default_dir=cwd).rstrip()
-        except SystemExit as exc:
-            return 1, str(exc)
-    shell_bin, _ = get_setting("shell")
-    shell_args = [shell_bin, "-NoProfile", "-Command", cmd_str] if _is_powershell(shell_bin) else [shell_bin, "-c", cmd_str]
-    env = {**os.environ, "IN_RUN_BLOCK": "1", "PYTHONUTF8": "1"}
-    # Ensure the directory containing this script is on PATH
-    script_dir = str(Path(self_path).parent)
-    env["PATH"] = f"{script_dir}{os.pathsep}{env.get('PATH', '')}"
-    try:
-        r = subprocess.run(
-            shell_args,
-            cwd=str(cwd),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env=env,
-            check=False,
-        )
-        return r.returncode, r.stdout.decode("utf-8", errors="replace").rstrip()
-    except OSError as exc:
-        return 1, f"[error running {cmd_str!r}: {exc}]"
-
-
-def build_start_bundle(
-    session_name: str,
-    work_dir: Path | None = None,
-    extra_files: list[str] | None = None,
-    prompt_text: str | None = None,
-    now: datetime | None = None,
-) -> dict[str, object]:
-    prog = prog_name()
-    wdir = (work_dir if work_dir is not None else get_work_dir()).resolve()
-    start_file, spec_dir = find_start_file(wdir)
-    if start_file is not None:
-        entries = parse_start_spec(start_file.read_text(encoding="utf-8"))
-        spec_source = str(start_file)
-    else:
-        spec_source = "built-in defaults"
-        entries = [
-            ("cmd", f"{prog} --agents"),
-            ("cmd", f"{prog} --agents-rules"),
-        ]
-        if (spec_dir / "AGENTS.md").is_file():
-            entries.append(("file", "AGENTS.md"))
-        if (spec_dir / ".git").exists():
-            entries.append(("cmd", "git status -sb"))
-
-    sections: list[tuple[str, str]] = []
-    warnings: list[str] = []
-    included_files: set[Path] = set()
-
-    def add_file_section(rel_path: str, base_folder: Path, explicit: bool) -> None:
-        clean = rel_path.strip()
-        if not clean:
-            return
-        p = (base_folder / clean).resolve() if not Path(clean).is_absolute() else Path(clean).resolve()
-        if p in included_files:
-            return
-        if not p.is_file():
-            if explicit or start_file is not None:
-                warnings.append(f"missing file: {clean}")
-            return
-        included_files.add(p)
-        try:
-            disp = str(p.relative_to(spec_dir))
-        except ValueError:
-            disp = str(p)
-        content = p.read_text(encoding="utf-8", errors="replace").rstrip()
-        sections.append((f"File: {disp}", content))
-
-    for kind, val in entries:
-        if kind == "file":
-            add_file_section(val, spec_dir, explicit=False)
-        elif kind == "cmd":
-            rc, out = _run_start_command(val, spec_dir)
-            if rc != 0:
-                warnings.append(f"command exited {rc}: {val}")
-            sections.append((f"$ {val}", out))
-
-    for extra in extra_files or []:
-        add_file_section(extra, Path.cwd().resolve(), explicit=True)
-
-    if prompt_text and prompt_text.strip():
-        sections.append(("Prompt", prompt_text.strip()))
-
-    ts = (now or datetime.now().astimezone()).strftime("%Y-%m-%d %H:%M %Z").strip()
-    manifest_lines: list[str] = []
-    body_blocks: list[str] = []
-    for title, content in sections:
-        n_lines = len(content.splitlines()) if content else 0
-        t_counts = count_tokens(content.encode("utf-8"))
-        approx_tok = t_counts["gpt"]
-        manifest_lines.append(f"  - {title}: {n_lines} lines (~{approx_tok} tokens)")
-        body_blocks.append(f"===== {title} =====\n{content}\n")
-
-    console_header_lines = [
-        f"# {prog} session context bundle",
-        f"Session: {session_name}",
-        f"Next block: {session_name}/1",
-        f"Date: {ts}",
-        f"Workdir: {spec_dir}",
-        f"Spec: {spec_source}",
-        "Included sections:",
-        *manifest_lines,
-    ]
-    if warnings:
-        console_header_lines.append("Warnings:")
-        console_header_lines.extend(f"  - {w}" for w in warnings)
-
-    bundle_header_lines = [
-        f"Session: {session_name}",
-        f"Next block: {session_name}/1",
-        f"Workdir: {spec_dir}",
-    ]
-
-    header_text = "\n".join(console_header_lines) + "\n"
-    bundle_header_text = "\n".join(bundle_header_lines) + "\n"
-    body_text = "\n".join(body_blocks)
-    full_text = bundle_header_text + "\n" + body_text
-    total_lines = len(full_text.splitlines())
-    total_tokens = count_tokens(full_text.encode("utf-8"))["gpt"]
-    return {
-        "header": header_text,
-        "body": body_text,
-        "full": full_text,
-        "warnings": warnings,
-        "total_lines": total_lines,
-        "total_tokens": total_tokens,
-    }
-
-
-def cmd_start(argv: list[str]) -> int:
-    prog = prog_name()
-    force = False
-    session_arg: str | None = None
-    prompt_parts: list[str] = []
-    extra_files: list[str] = []
-    i = 0
-    while i < len(argv):
-        a = argv[i]
-        if a == "--force":
-            force = True
-            i += 1
-        elif a == "--session":
-            if i + 1 >= len(argv):
-                raise SystemExit(f"{prog}: --session requires an argument")
-            session_arg = argv[i + 1]
-            i += 2
-        elif a in ("-p", "--prompt"):
-            if i + 1 >= len(argv):
-                raise SystemExit(f"{prog}: {a} requires an argument")
-            prompt_parts.append(argv[i + 1])
-            i += 2
-        elif a.startswith("-"):
-            raise SystemExit(f"{prog}: unknown option for --start: {a}")
-        else:
-            extra_files.append(a)
-            i += 1
-
-    # Backward compatibility: if a single positional argument is not an existing file and matches session name (e.g. s2)
-    if session_arg is None and len(extra_files) == 1 and not Path(extra_files[0]).exists() and re.fullmatch(r"s\d+", extra_files[0]):
-        session_arg = extra_files.pop(0)
-
-    sdir = start_session(session_arg, force=force)
-    session_name = sdir.name
-    bundle_path = sdir / "0.txt"
-    prompt_text = "\n\n".join(prompt_parts) if prompt_parts else None
-    res = build_start_bundle(
-        session_name=session_name,
-        extra_files=extra_files,
-        prompt_text=prompt_text,
-    )
-    write_private(bundle_path, str(res["full"]), overwrite=True)
-    hdr_lines = str(res["header"]).rstrip("\n").splitlines()
-    if hdr_lines and hdr_lines[0].startswith("# "):
-        hdr_lines = hdr_lines[1:]
-    hdr_lines.append(f"Total: {res['total_lines']} lines (~{res['total_tokens']} tokens)")
-    hdr_lines.append(f"Bundle: {bundle_path}")
-    sys.stdout.write(format_info_box(f"[{session_name}/0] START BUNDLE", hdr_lines) + "\n")
-    sys.stdout.flush()
-    if not in_run_block():
-        offer_clipboard_copy(f"{session_name}/0", bundle_path, ok=True, rc=0)
-    return 0
 
 
 def cmd_list(session: str | None = None) -> int:
@@ -2646,6 +2508,353 @@ def _tree_from_args(argv: list[str], default_dir: Path | None = None) -> str:
 
 def cmd_tree(argv: list[str]) -> int:
     sys.stdout.write(_tree_from_args(argv))
+    return 0
+
+
+def default_start_template(prog: str | None = None) -> str:
+    cmd = prog or prog_name()
+    lines = [
+        f"# {START_FILE_NAME} — session context bundle specification for '{cmd} --start'",
+        "# Plain lines are file paths (read directly as UTF-8 relative to the project root).",
+        "# Lines starting with '$ ' (or '! ') are shell commands executed in the project directory.",
+        "",
+        f"$ {cmd} --agents",
+        f"$ {cmd} --agents-rules",
+        "",
+        "AGENTS.md",
+        "",
+        "$ git status -sb",
+        "$ git branch -vv",
+        "$ git log --oneline -10",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def cmd_init_start(force: bool = False, target_dir: Path | None = None) -> int:
+    prog = prog_name()
+    base_dir = target_dir if target_dir is not None else Path.cwd()
+    path = base_dir / START_FILE_NAME
+    if path.exists() and not force:
+        sys.stderr.write(f"{prog}: {path} already exists (use --force to overwrite)\n")
+        return 2
+    path.write_text(default_start_template(prog), encoding="utf-8")
+    sys.stdout.write(f"{prog}: wrote starter {START_FILE_NAME} to {path}\n")
+    return 0
+
+
+def find_start_file(work_dir: Path) -> tuple[Path | None, Path]:
+    cwd = Path.cwd().resolve()
+    wdir = work_dir.resolve()
+    # Walk from cwd up to work_dir (if cwd is inside work_dir)
+    if cwd == wdir or wdir in cwd.parents:
+        cur = cwd
+        while True:
+            candidate = cur / START_FILE_NAME
+            if candidate.is_file():
+                return candidate, cur
+            if cur == wdir or cur.parent == cur:
+                break
+            cur = cur.parent
+    wdir_candidate = wdir / START_FILE_NAME
+    if wdir_candidate.is_file():
+        return wdir_candidate, wdir
+    return None, wdir
+
+
+def parse_start_spec(text: str) -> list[tuple[str, str]]:
+    """Returns list of (kind, value) where kind is 'file' or 'cmd'."""
+    entries: list[tuple[str, str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("$ ") or line.startswith("! "):
+            cmd_str = line[2:].strip()
+            if cmd_str:
+                entries.append(("cmd", cmd_str))
+        elif line in ("$", "!"):
+            continue
+        else:
+            entries.append(("file", line))
+    return entries
+
+
+def _run_start_command(cmd_str: str, cwd: Path) -> tuple[int, str]:
+    prog = prog_name()
+    self_path = str(Path(__file__).resolve())
+    # If the command invokes '<prog> --agents' directly, call our own agents_markdown() in-process
+    if re.fullmatch(rf"{re.escape(prog)}\s+--agents(?:-md)?", cmd_str) or re.fullmatch(r"run_block\s+--agents(?:-md)?", cmd_str):
+        return 0, agents_markdown(prog)
+    if re.match(rf"^(?:{re.escape(prog)}|run_block)\s+--(?:agents-)?rules(?:\s+.*)?$", cmd_str):
+        try:
+            parts = shlex.split(cmd_str)[2:]
+            if any(a in ("--list", "-l") for a in parts):
+                pass
+            else:
+                return 0, rules_markdown(parts, work_dir=cwd).rstrip()
+        except SystemExit as exc:
+            return 1, str(exc)
+    if re.match(rf"^(?:{re.escape(prog)}|run_block)\s+--tree(?:\s+.*)?$", cmd_str):
+        try:
+            parts = shlex.split(cmd_str)[2:]
+            return 0, _tree_from_args(parts, default_dir=cwd).rstrip()
+        except SystemExit as exc:
+            return 1, str(exc)
+    shell_bin, _ = get_setting("shell")
+    shell_args = [shell_bin, "-NoProfile", "-Command", cmd_str] if _is_powershell(shell_bin) else [shell_bin, "-c", cmd_str]
+    env = {**os.environ, "IN_RUN_BLOCK": "1", "PYTHONUTF8": "1"}
+    # Ensure the directory containing this script is on PATH
+    script_dir = str(Path(self_path).parent)
+    env["PATH"] = f"{script_dir}{os.pathsep}{env.get('PATH', '')}"
+    try:
+        r = subprocess.run(
+            shell_args,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            check=False,
+        )
+        return r.returncode, r.stdout.decode("utf-8", errors="replace").rstrip()
+    except OSError as exc:
+        return 1, f"[error running {cmd_str!r}: {exc}]"
+
+
+def build_start_bundle(
+    session_name: str,
+    work_dir: Path | None = None,
+    extra_files: list[str] | None = None,
+    prompt_text: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    prog = prog_name()
+    wdir = (work_dir if work_dir is not None else get_work_dir()).resolve()
+    start_file, spec_dir = find_start_file(wdir)
+    if start_file is not None:
+        entries = parse_start_spec(start_file.read_text(encoding="utf-8"))
+        spec_source = str(start_file)
+    else:
+        spec_source = "built-in defaults"
+        entries = [
+            ("cmd", f"{prog} --agents"),
+            ("cmd", f"{prog} --agents-rules"),
+        ]
+        if (spec_dir / "AGENTS.md").is_file():
+            entries.append(("file", "AGENTS.md"))
+        if (spec_dir / ".git").exists():
+            entries.append(("cmd", "git status -sb"))
+
+    sections: list[tuple[str, str]] = []
+    warnings: list[str] = []
+    included_files: set[Path] = set()
+
+    def add_file_section(rel_path: str, base_folder: Path, explicit: bool) -> None:
+        clean = rel_path.strip()
+        if not clean:
+            return
+        p = (base_folder / clean).resolve() if not Path(clean).is_absolute() else Path(clean).resolve()
+        if p in included_files:
+            return
+        if not p.is_file():
+            if explicit or start_file is not None:
+                warnings.append(f"missing file: {clean}")
+            return
+        included_files.add(p)
+        try:
+            disp = str(p.relative_to(spec_dir))
+        except ValueError:
+            disp = str(p)
+        content = p.read_text(encoding="utf-8", errors="replace").rstrip()
+        sections.append((f"File: {disp}", content))
+
+    for kind, val in entries:
+        if kind == "file":
+            add_file_section(val, spec_dir, explicit=False)
+        elif kind == "cmd":
+            rc, out = _run_start_command(val, spec_dir)
+            if rc != 0:
+                warnings.append(f"command exited {rc}: {val}")
+            sections.append((f"$ {val}", out))
+
+    for extra in extra_files or []:
+        add_file_section(extra, Path.cwd().resolve(), explicit=True)
+
+    if prompt_text and prompt_text.strip():
+        sections.append(("Prompt", prompt_text.strip()))
+
+    ts = (now or datetime.now().astimezone()).strftime("%Y-%m-%d %H:%M %Z").strip()
+    manifest_lines: list[str] = []
+    body_blocks: list[str] = []
+    for title, content in sections:
+        n_lines = len(content.splitlines()) if content else 0
+        t_counts = count_tokens(content.encode("utf-8"))
+        approx_tok = t_counts["gpt"]
+        manifest_lines.append(f"  - {title}: {n_lines} lines (~{approx_tok} tokens)")
+        body_blocks.append(f"===== {title} =====\n{content}\n")
+
+    console_header_lines = [
+        f"# {prog} session context bundle",
+        f"Session: {session_name}",
+        f"Next block: {session_name}/1",
+        f"Date: {ts}",
+        f"Workdir: {spec_dir}",
+        f"Spec: {spec_source}",
+        "Included sections:",
+        *manifest_lines,
+    ]
+    if warnings:
+        console_header_lines.append("Warnings:")
+        console_header_lines.extend(f"  - {w}" for w in warnings)
+
+    bundle_header_lines = [
+        f"Session: {session_name}",
+        f"Next block: {session_name}/1",
+        f"Workdir: {spec_dir}",
+    ]
+
+    header_text = "\n".join(console_header_lines) + "\n"
+    bundle_header_text = "\n".join(bundle_header_lines) + "\n"
+    body_text = "\n".join(body_blocks)
+    full_text = bundle_header_text + "\n" + body_text
+    total_lines = len(full_text.splitlines())
+    total_tokens = count_tokens(full_text.encode("utf-8"))["gpt"]
+    return {
+        "header": header_text,
+        "body": body_text,
+        "full": full_text,
+        "warnings": warnings,
+        "total_lines": total_lines,
+        "total_tokens": total_tokens,
+    }
+
+
+def cmd_start(argv: list[str]) -> int:
+    prog = prog_name()
+    force = False
+    session_arg: str | None = None
+    prompt_parts: list[str] = []
+    extra_files: list[str] = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--force":
+            force = True
+            i += 1
+        elif a == "--session":
+            if i + 1 >= len(argv):
+                raise SystemExit(f"{prog}: --session requires an argument")
+            session_arg = argv[i + 1]
+            i += 2
+        elif a in ("-p", "--prompt"):
+            if i + 1 >= len(argv):
+                raise SystemExit(f"{prog}: {a} requires an argument")
+            prompt_parts.append(argv[i + 1])
+            i += 2
+        elif a.startswith("-"):
+            raise SystemExit(f"{prog}: unknown option for --start: {a}")
+        else:
+            extra_files.append(a)
+            i += 1
+
+    # Backward compatibility: if a single positional argument is not an existing file and matches session name (e.g. s2)
+    if session_arg is None and len(extra_files) == 1 and not Path(extra_files[0]).exists() and re.fullmatch(r"s\d+", extra_files[0]):
+        session_arg = extra_files.pop(0)
+
+    sdir = start_session(session_arg, force=force)
+    session_name = sdir.name
+    bundle_path = sdir / "0.txt"
+    prompt_text = "\n\n".join(prompt_parts) if prompt_parts else None
+    res = build_start_bundle(
+        session_name=session_name,
+        extra_files=extra_files,
+        prompt_text=prompt_text,
+    )
+    write_private(bundle_path, str(res["full"]), overwrite=True)
+    hdr_lines = str(res["header"]).rstrip("\n").splitlines()
+    if hdr_lines and hdr_lines[0].startswith("# "):
+        hdr_lines = hdr_lines[1:]
+    hdr_lines.append(f"Total: {res['total_lines']} lines (~{res['total_tokens']} tokens)")
+    hdr_lines.append(f"Bundle: {bundle_path}")
+    sys.stdout.write(format_info_box(f"[{session_name}/0] START BUNDLE", hdr_lines) + "\n")
+    sys.stdout.flush()
+    if not in_run_block():
+        offer_clipboard_copy(f"{session_name}/0", bundle_path, ok=True, rc=0)
+    return 0
+
+
+def parse_version_from_source(source: str) -> str | None:
+    m = re.search(r'^VERSION\s*=\s*["\x27]([^"\x27]+)["\x27]', source, flags=re.MULTILINE)
+    return m.group(1) if m else None
+
+
+def version_tuple(v: str) -> tuple[int, ...]:
+    parts = []
+    for p in re.split(r"[^0-9]+", v):
+        if p:
+            parts.append(int(p))
+    return tuple(parts)
+
+
+def fetch_remote_script(url: str | None = None) -> str:
+    cfg_url, _ = get_setting("update_url")
+    target_url = url or cfg_url
+    if target_url.startswith(("http://", "https://")) and "?" not in target_url:
+        target_url = f"{target_url}?t={int(time.time())}"
+    req = urllib.request.Request(
+        target_url,
+        headers={"User-Agent": f"run_block/{VERSION}", "Cache-Control": "no-cache", "Pragma": "no-cache"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = resp.read().decode("utf-8")
+    if REPO_MARKER and REPO_MARKER not in data:
+        raise ValueError("downloaded file does not contain expected repository marker")
+    ast.parse(data)
+    return data
+
+
+def cmd_check_update(url: str | None = None) -> int:
+    prog = prog_name()
+    try:
+        remote_src = fetch_remote_script(url)
+    except Exception as exc:
+        sys.stderr.write(f"{prog}: failed to check for updates: {exc}\n")
+        return 1
+    remote_ver = parse_version_from_source(remote_src) or "unknown"
+    if version_tuple(remote_ver) > version_tuple(VERSION):
+        sys.stdout.write(f"{prog}: update available: {VERSION} -> {remote_ver} (run '{prog} --update')\n")
+    else:
+        sys.stdout.write(f"{prog} {VERSION} is up to date (remote: {remote_ver}).\n")
+    return 0
+
+
+def cmd_update(force: bool = False, url: str | None = None, target_path: Path | None = None) -> int:
+    prog = prog_name()
+    dest = target_path or Path(__file__).resolve()
+    try:
+        remote_src = fetch_remote_script(url)
+    except Exception as exc:
+        sys.stderr.write(f"{prog}: update failed: {exc}\n")
+        return 1
+    remote_ver = parse_version_from_source(remote_src) or "unknown"
+    if not force and version_tuple(remote_ver) <= version_tuple(VERSION):
+        sys.stdout.write(f"{prog} {VERSION} is already up to date.\n")
+        return 0
+    try:
+        tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{dest.name}.", dir=str(dest.parent))
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                f.write(remote_src)
+            os.chmod(tmp_name, 0o755)
+            os.replace(tmp_name, dest)
+        except Exception:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+            raise
+    except Exception as exc:
+        sys.stderr.write(f"{prog}: could not write updated binary to {dest}: {exc}\n")
+        return 1
+    sys.stdout.write(f"{prog}: updated {VERSION} -> {remote_ver} ({dest})\n")
     return 0
 
 
