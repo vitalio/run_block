@@ -68,7 +68,8 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("Usage:", r.stdout)
         self.assertIn("--config", r.stdout)
         self.assertIn("--agents", r.stdout)
-        self.assertIn("--init-start", r.stdout)
+        self.assertIn("--start", r.stdout)
+        self.assertNotIn("--init-start", r.stdout)
         self.assertNotIn("--agents-install", r.stdout)
 
         rv = subprocess.run([str(SCRIPT), "--version"], capture_output=True, text=True, check=False)
@@ -175,6 +176,8 @@ class TestRunBlock(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             rc = self.mod.cmd_normal("s1/1", "echo bad_cmd\nexit 3\n")
             self.assertEqual(rc, 3)
+            bad_fix = "assert False\n"
+            self.assertEqual(self.mod.cmd_fix("s1/1", bad_fix), 2)
             fix1 = "text = text.replace('exit 3', 'exit 4')\n"
             self.assertEqual(self.mod.cmd_fix("s1/1", fix1), 4)
             self.assertEqual(self.mod.cmd_fix("s1/1", fix1), 2)
@@ -268,18 +271,11 @@ class TestRunBlock(unittest.TestCase):
         self.assertEqual(r_retry.returncode, 0)
         self.assertIn("first_step", r_retry.stdout)
 
-    def test_implicit_first_block_and_start_bundle(self):
+    def test_implicit_first_block_and_stdin_start_bundle(self):
         proj = self.tmp / "proj"
         proj.mkdir()
-        (proj / "AGENTS.md").write_text("# My Project Rules\n", encoding="utf-8")
-        (proj / "EXTRA.md").write_text("Extra file body\n", encoding="utf-8")
-        (proj / ".run_block.start").write_text(
-            "# comment\nAGENTS.md\nMISSING_DOC.md\n$ run_block --agents\n$ echo custom_cmd_output\n",
-            encoding="utf-8",
-        )
         env = {**os.environ, "RUN_BLOCK_DIR": str(self.tmp / "sessions"), "RUN_BLOCK_CWD": str(proj)}
 
-        # 1. Calling run_block with no args and script on stdin creates s1/1 automatically
         r_first = subprocess.run(
             [str(SCRIPT)],
             input="echo implicit_s1_step1\n",
@@ -294,9 +290,10 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("implicit_s1_step1", r_first.stdout)
         self.assertTrue((self.tmp / "sessions/s1/1.txt").is_file())
 
-        # 2. Calling run_block --start creates s2/0.txt from .run_block.start + extra file + prompt
+        bundle_input = "===== File: AGENTS.md =====\n# My Project Rules\n\n===== Prompt =====\nWork on task F1\n"
         r_start = subprocess.run(
-            [str(SCRIPT), "--start", "EXTRA.md", "-p", "Work on task F1"],
+            [str(SCRIPT), "--start"],
+            input=bundle_input,
             capture_output=True,
             text=True,
             cwd=str(proj),
@@ -306,24 +303,11 @@ class TestRunBlock(unittest.TestCase):
         self.assertEqual(r_start.returncode, 0, r_start.stderr)
         self.assertIn("Session: s2", r_start.stdout)
         self.assertIn("Next block: s2/1", r_start.stdout)
-        self.assertIn("Included sections:", r_start.stdout)
         bundle = (self.tmp / "sessions/s2/0.txt").read_text(encoding="utf-8")
         self.assertIn("Session: s2\nNext block: s2/1\nWorkdir:", bundle)
-        self.assertIn("Warnings:", r_start.stdout)
-        self.assertIn("missing file: MISSING_DOC.md", r_start.stdout)
-        self.assertNotIn("Included sections:", bundle)
-        self.assertNotIn("Spec:", bundle)
-        self.assertNotIn("Warnings:", bundle)
-        self.assertNotIn("MISSING_DOC.md", bundle)
         self.assertIn("===== File: AGENTS.md =====", bundle)
-        self.assertIn("# My Project Rules", bundle)
-        self.assertIn("===== $ run_block --agents =====", bundle)
-        self.assertIn("custom_cmd_output", bundle)
-        self.assertIn("===== File: EXTRA.md =====", bundle)
-        self.assertIn("===== Prompt =====", bundle)
         self.assertIn("Work on task F1", bundle)
 
-        # 3. Calling run_block with no args right after --start reuses s2 (since s2 only has 0.txt) and runs s2/1
         r_reuse = subprocess.run(
             [str(SCRIPT)],
             input="echo reused_s2_step1\n",
@@ -337,7 +321,6 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("[s2/1] START", r_reuse.stdout)
         self.assertIn("reused_s2_step1", r_reuse.stdout)
 
-        # 4. --show s2/0 displays the bundle
         r_show0 = subprocess.run(
             [str(SCRIPT), "--show", "s2/0"],
             capture_output=True,
@@ -349,36 +332,12 @@ class TestRunBlock(unittest.TestCase):
         self.assertEqual(r_show0.returncode, 0)
         self.assertIn("Bundle:", r_show0.stdout)
 
-    def test_start_ignores_subdir_spec_and_includes_default_rules(self):
-        outer = self.tmp / "outer_repo"
-        sub = outer / "my_subproject"
-        sub.mkdir(parents=True)
-        (sub / "AGENTS.md").write_text("# Subproject rules\n", encoding="utf-8")
-        (sub / ".run_block.start").write_text("$ run_block --agents\nAGENTS.md\n", encoding="utf-8")
-        env = {**os.environ, "RUN_BLOCK_DIR": str(self.tmp / "sub_sessions"), "RUN_BLOCK_CWD": str(outer)}
-        r_start = subprocess.run(
-            [str(SCRIPT), "--start"],
-            capture_output=True,
-            text=True,
-            cwd=str(outer),
-            env=env,
-            check=False,
-        )
-        self.assertEqual(r_start.returncode, 0, r_start.stderr)
-        self.assertIn(f"Workdir: {outer.resolve()}", r_start.stdout)
-        self.assertIn("Spec: built-in defaults", r_start.stdout)
-        bundle = (self.tmp / "sub_sessions/s1/0.txt").read_text(encoding="utf-8")
-        self.assertNotIn("# Subproject rules", bundle)
-        self.assertIn("===== $ run_block --agents =====", bundle)
-        self.assertIn("## Agent Engineering Rules (start, secrets, plan, edit, diff-review, external, end, lang)", bundle)
-
-
     def test_info_and_prompt_boxes_and_skipped_step_confirmation(self):
         info_box = self.mod.format_info_box("[s1/0] START BUNDLE", ["Session: s1", "Next block: s1/1"])
         self.assertIn("┌─ [s1/0] START BUNDLE ", info_box)
         self.assertEqual(len({self.mod.display_width(l) for l in info_box.splitlines()}), 1)
 
-        p_box, iw, _ = self.mod.format_prompt_box(
+        p_box, _, _ = self.mod.format_prompt_box(
             "[s1/2] [!] MISSING PREVIOUS STEP",
             ["Previous step s1/1 has not been run yet."],
             "-> Run s1/2 anyway? [y/N]: ",
@@ -386,7 +345,6 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("MISSING PREVIOUS STEP", p_box)
         self.assertEqual(len({self.mod.display_width(l) for l in p_box.splitlines()}), 1)
 
-        import io
         tty_w = io.StringIO()
         tty_r = io.StringIO("y\n")
         ok = self.mod.prompt_yes_no_box(
@@ -458,7 +416,13 @@ class TestRunBlock(unittest.TestCase):
         self.assertNotIn("external-write", cats)
         self.assertEqual(cats, ["privilege-system", "prod-db"])
 
-    def test_clean_sessions(self):
+    def test_clean_sessions_and_build_py_check(self):
+        r_bhelp = subprocess.run(["python3", str(ROOT / "build.py"), "-h"], capture_output=True, text=True, check=False)
+        self.assertEqual(r_bhelp.returncode, 0)
+        self.assertIn("Usage:", r_bhelp.stdout)
+        r_bchk = subprocess.run(["python3", str(ROOT / "build.py"), "--check"], capture_output=True, text=True, check=False)
+        self.assertEqual(r_bchk.returncode, 0, r_bchk.stderr)
+
         for idx in range(1, 5):
             sdir = self.tmp / f"s{idx}"
             sdir.mkdir()
@@ -480,98 +444,6 @@ class TestRunBlock(unittest.TestCase):
         self.assertEqual(rc_all, 0)
         self.assertEqual([p.name for p in self.tmp.iterdir() if p.is_dir()], [])
 
-    def test_repo_tree_and_budget_collapsing(self):
-        repo = self.tmp / "tree_repo"
-        repo.mkdir()
-        (repo / "README.md").write_text("# Hello\nLine 2\n", encoding="utf-8")
-        big_dir = repo / "pkg" / "deep"
-        big_dir.mkdir(parents=True)
-        for i in range(25):
-            (big_dir / f"mod_{i:02d}.py").write_text("x = 1\ny = 2\nz = 3\n", encoding="utf-8")
-
-        full_tree = self.mod.build_repo_tree(root_dir=repo, max_lines=100, max_tokens=2000)
-        self.assertIn("README.md (2L)", full_tree)
-        self.assertIn("mod_00.py (3L)", full_tree)
-        self.assertIn("# Total: 26 files, 77 lines", full_tree)
-
-        compact_tree = self.mod.build_repo_tree(root_dir=repo, max_lines=10, max_tokens=500)
-        self.assertLessEqual(len(compact_tree.splitlines()), 10)
-        self.assertIn("deep/ (25 files, 75L)", compact_tree)
-        self.assertNotIn("mod_00.py", compact_tree)
-
-        # Verify in-process execution via .run_block.start
-        (repo / ".run_block.start").write_text("$ run_block --tree --max-lines 10\n", encoding="utf-8")
-        res = self.mod.build_start_bundle("s1", work_dir=repo)
-        self.assertIn("===== $ run_block --tree --max-lines 10 =====", str(res["full"]))
-        self.assertIn("deep/ (25 files, 75L)", str(res["full"]))
-
-    def test_rules_builtin_and_custom_and_start_bundle(self):
-        # Verify build.py --check succeeds and build.py -h exits 0
-        r_bhelp = subprocess.run(["python3", str(ROOT / "build.py"), "-h"], capture_output=True, text=True, check=False)
-        self.assertEqual(r_bhelp.returncode, 0)
-        self.assertIn("Usage:", r_bhelp.stdout)
-        r_bchk = subprocess.run(["python3", str(ROOT / "build.py"), "--check"], capture_output=True, text=True, check=False)
-        self.assertEqual(r_bchk.returncode, 0, r_bchk.stderr)
-
-        # Default preset in a git repo includes workflow atomic rules + lang + git
-        git_dir = self.tmp / "fake_git"
-        (git_dir / ".git").mkdir(parents=True)
-        md_def = self.mod.rules_markdown(work_dir=git_dir, prog="run_block")
-        self.assertIn("## Terminal blocks (`run_block`", md_def)
-        self.assertIn("## Agent Engineering Rules (start, secrets, plan, edit, diff-review, external, end, lang, vcs/git)", md_def)
-        self.assertIn("Guarded commit blocks:", md_def)
-        self.assertIn("in **English**", md_def)
-
-        # Default preset in a CVS directory auto-selects cvs instead of git
-        cvs_dir = self.tmp / "fake_cvs"
-        (cvs_dir / "CVS").mkdir(parents=True)
-        md_cvs = self.mod.rules_markdown(work_dir=cvs_dir)
-        self.assertIn("lang, vcs/cvs)", md_cvs)
-        self.assertIn("CVS workflow & safety:", md_cvs)
-
-        # Variable substitution and rule exclusion (-external)
-        cfg_p = self.tmp / "config"
-        cfg_p.write_text("rules_preset.ru-py = core/lang, stack/python-cli, lang=German, py_min=3.10\n", encoding="utf-8")
-        md_preset = self.mod.rules_markdown(["ru-py"])
-        self.assertIn("in **German**", md_preset)
-        self.assertIn("Python 3.10+ compatibility", md_preset)
-        md_cli_override = self.mod.rules_markdown(["ru-py", "lang=Russian", "py_min=3.12"])
-        self.assertIn("in **Russian**", md_cli_override)
-        self.assertIn("Python 3.12+ compatibility", md_cli_override)
-        cfg_p.unlink()
-        md_var = self.mod.rules_markdown(["workflow", "-external", "lang", "python-cli", "lang=Russian", "py_min=3.11"])
-        self.assertNotIn("external", md_var.splitlines()[0])
-        self.assertIn("in **Russian**", md_var)
-        self.assertIn("Python 3.11+ compatibility", md_var)
-
-        # Multiple topics + custom rule in RUN_BLOCK_RULES_DIR
-        rdir = self.tmp / "custom_rules"
-        rdir.mkdir()
-        (rdir / "security.md").write_text("# Description: Custom security policy\n- **Security:** Never hardcode secrets.\n", encoding="utf-8")
-        os.environ["RUN_BLOCK_RULES_DIR"] = str(rdir)
-        try:
-            md_all = self.mod.rules_markdown(["all"])
-            self.assertIn("security)", md_all)
-            self.assertIn("Versioning & releases (SemVer):", md_all)
-            self.assertIn("Python CLI engineering invariants:", md_all)
-            self.assertIn("- **Security:** Never hardcode secrets.", md_all)
-
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                rc_list = self.mod.cmd_rules(["--list"])
-            self.assertEqual(rc_list, 0)
-            self.assertIn("Presets (logical groups of rules/presets):", buf.getvalue())
-            self.assertIn("Atomic rules", buf.getvalue())
-            self.assertIn("security", buf.getvalue())
-
-            proj = self.tmp / "rules_proj"
-            proj.mkdir()
-            (proj / ".run_block.start").write_text("$ run_block --agents workflow -external security\n", encoding="utf-8")
-            res = self.mod.build_start_bundle("s1", work_dir=proj)
-            self.assertIn("===== $ run_block --agents workflow -external security =====", str(res["full"]))
-            self.assertIn("- **Security:** Never hardcode secrets.", str(res["full"]))
-        finally:
-            os.environ.pop("RUN_BLOCK_RULES_DIR", None)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,2 +1,0 @@
-# Description: Git staging (git add -N), diff inspection, and destructive operation guards
-- **Git workflow & safety:** Mark new files with `git add -N` before printing `git status --porcelain` and `git diff HEAD` in the diff-review step. Without explicit user approval each time: **no `git push --force`, no `git reset --hard`, no deleting a branch or tag, no rewriting a pushed commit.** Push commits at the end of a task/session (to `origin {main_branch:main}` unless on a feature branch), and report unpushed commits or unmerged branches at session end.

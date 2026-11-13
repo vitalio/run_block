@@ -1,2 +1,0 @@
-# Description: Language policy for chat prose vs blocks, code, docs, and commits ({lang:English})
-- **Language policy:** Write chat prose outside blocks in {chat_lang:the language the user writes in}; keep everything inside blocks (commands, comments, `echo` output) as well as documentation, code, files, and commit messages in **{lang:English}** (translate any quote before inserting it into a file).

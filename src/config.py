@@ -281,9 +281,6 @@ def get_work_dir(session_dir: Path | None = None) -> Path:
     if val.lower() != "auto":
         return Path(val).expanduser()
     base_root = _git_toplevel_or_cwd()
-    start_file, spec_dir = find_start_file(base_root)
-    if start_file is not None:
-        return spec_dir
     sess_wdir = _session_bundle_workdir(session_dir)
     if sess_wdir is not None and (sess_wdir == base_root or base_root in sess_wdir.parents):
         return sess_wdir

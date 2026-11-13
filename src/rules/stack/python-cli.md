@@ -1,2 +1,0 @@
-# Description: Zero-dependency Python 3 CLI invariants ({py_min:3.9}+) and shell/Python pre-commit checks
-- **Python CLI engineering invariants:** Use only the Python 3 standard library (`from __future__ import annotations` at top of Python files for Python {py_min:3.9}+ compatibility). Every flag/command must be documented in `-h`/`--help` (which exits `0` doing nothing) and covered by unit tests. Syntax-check shell scripts with `bash -n` and `shellcheck -S warning`, verify Python syntax with `ast.parse`, and run `tests/test_*.py` unit tests before committing.

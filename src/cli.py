@@ -87,13 +87,9 @@ def main(argv: list[str] | None = None) -> int:
     if "--init-config" in args:
         force = "--force" in args
         return cmd_init_config(force=force)
-    if "--init-start" in args:
-        force = "--force" in args
-        return cmd_init_start(force=force)
-    if args and args[0] in ("--agents", "--agents-md"):
-        return cmd_rules(args[1:], default_target="default")
-    if args and args[0] in ("--agents-rules", "--rules"):
-        return cmd_rules(args[1:], default_target="workflow")
+    if "--agents" in args or "--agents-md" in args:
+        sys.stdout.write(agents_markdown(prog) + "\n")
+        return 0
     if not args:
         if not sys.stdin.isatty():
             session = resolve_initial_session(ensure_base())
@@ -116,6 +112,9 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"{prog}: usage: {prog} --retry [session/step]")
         return cmd_retry(args[1] if len(args) == 2 else None)
 
+    if args[0] == "--clean":
+        return cmd_clean(args[1:])
+
     if args[0] == "--check-update":
         if len(args) != 1:
             raise SystemExit(f"{prog}: usage: {prog} --check-update")
@@ -128,13 +127,7 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"{prog}: usage: {prog} --update [--force]")
         return cmd_update(force=force)
 
-    if args[0] == "--clean":
-        return cmd_clean(args[1:])
-
-    if args[0] == "--tree":
-        return cmd_tree(args[1:])
-
-    if args[0] == "--start":
+    if args[0] in ("--start", "--bundle"):
         return cmd_start(args[1:])
 
     if args[0] == "--fix":
@@ -144,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if len(args) != 1 or args[0].startswith("-"):
         raise SystemExit(
-            f"{prog}: usage: {prog} [<session>/<step>] (or --fix / --retry / --list / --show / --clean / --tree / --start / --init-start / --config / --agents / --update / --version / --help)"
+            f"{prog}: usage: {prog} [<session>/<step>] (or --fix / --retry / --list / --show / --clean / --start / --config / --agents / --update / --version / --help)"
         )
     return cmd_normal(args[0], sys.stdin.read())
 

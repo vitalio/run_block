@@ -338,8 +338,9 @@ def cmd_fix(ref: str, fix_code: str) -> int:
             f"[{session}/{target}] NOT RUN: target script {src_script} does not exist",
         )
 
-    if script_path.exists() or out_path.exists() or fix_path.exists():
+    if script_path.exists() or fix_path.exists():
         return not_run_exit(label, sdir, new_step, out_path, f"[{label}] NOT RUN: fix step already exists — output: {out_path}")
+    out_path.unlink(missing_ok=True)
     if not fix_code.strip():
         return not_run_exit(label, sdir, new_step, out_path, f"[{label}] NOT RUN: empty fix on stdin")
 

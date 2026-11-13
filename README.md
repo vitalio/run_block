@@ -1,14 +1,13 @@
 # run_block
 
-**Safe, sequential terminal block execution and session context bundler for AI coding agents.**
+**Safe, sequential terminal block execution protocol for AI coding agents.**
 
 `run_block` is a zero-dependency Python 3 CLI that connects any chat LLM to your local
-terminal without API keys or background daemons. It builds a single-file session context
-bundle (`run_block --start` -> `/tmp/run_block/<session>/0.txt`) and executes numbered
-Bash blocks (`<session>/1`, `<session>/2`, ...) with `bash -n` syntax validation, a
+terminal without API keys or background daemons. It receives a session context bundle on `stdin`
+(`agents_bundle | run_block --start` -> `/tmp/run_block/<session>/0.txt`) and executes numbered
+Bash or PowerShell blocks (`<session>/1`, `<session>/2`, ...) with syntax validation, a
 pre-execution `BLOCK PLAN` safety scanner, PTY streaming, and one-keystroke clipboard copy
 with Claude/GPT/Gemini token counts.
-
 
 ## Quick Installation
 
@@ -24,26 +23,14 @@ curl -fsSL https://raw.githubusercontent.com/vitalio/run_block/main/install.sh |
 irm https://raw.githubusercontent.com/vitalio/run_block/main/install.ps1 | iex
 ```
 
-## Starting a Session (`.run_block.start`)
+## Starting a Session (`agents_bundle | run_block --start`)
 
-Create `.run_block.start` in your project root (or run `run_block --init-start`).
-Plain lines are UTF-8 file paths; lines starting with `$ ` are shell commands:
-
-```text
-$ run_block --agents python-tool
-
-AGENTS.md
-
-$ git status -sb
-$ git branch -vv
-$ git log --oneline -10
-```
-
-Build `/tmp/run_block/<session>/0.txt` and copy it to your clipboard:
+Pipe any context bundle (for example from `agents_bundle`) into `run_block --start` to initialize
+`/tmp/run_block/<session>/0.txt` and copy it to your clipboard:
 
 ```bash
-run_block --start
-run_block --start src/main.py -p "Let's work on task F1"
+agents_bundle | run_block --start
+agents_bundle -p "Let's work on task F7" src/runner.py | run_block --start
 ```
 
 ## Running and Fixing Blocks
@@ -98,16 +85,14 @@ Run `run_block --init-config` to create `~/.config/run_block/config` or `run_blo
 
 | Command | Description |
 | :--- | :--- |
-| `run_block [<session>/<step>]` | Run a Bash block from `stdin` (omit ref on first block to auto-init `<session>/1`) |
-| `run_block --fix <session>/<target>` | Patch `<target>.sh` via Python on `stdin` and run as `<target>_N` |
+| `run_block [<session>/<step>]` | Run a block from `stdin` (omit ref on first block to auto-init `<session>/1`) |
+| `run_block --fix <session>/<target>` | Patch `<target>` script via Python on `stdin` and run as `<target>_N` |
 | `run_block --retry [session/step]` | Re-run the last (or specified) block |
 | `run_block --list`, `-l [session]` | List sessions and blocks with their status and summary |
 | `run_block --show [session/step]` | Show saved script and output of a block (or `<session>/0` bundle) |
 | `run_block --clean [--keep N \| --all]` | Prune old session directories in `/tmp/run_block` (default: `--keep 5`) |
-| `run_block --tree [DIR] [options]` | Print token-budgeted repository file tree (`--max-lines N`, `--max-tokens N`) |
-| `run_block --start [options] [FILE ..]` | Build `<session>/0.txt` context bundle from `.run_block.start` |
-| `run_block --init-start [--force]` | Create a starter `.run_block.start` in the current directory |
-| `run_block --agents [ITEM ... \| --list]` | Print AI agent instructions, presets, and rules (`default`, `blocks`, `workflow`, `python-tool`, `-rule`, `k=v`) |
+| `run_block --start [--session NAME]` | Read context bundle from `stdin` into `<session>/0.txt` |
+| `run_block --agents` | Print Markdown instructions for AI agents |
 | `run_block --config` | Show active configuration and sources |
 | `run_block --init-config [--force]` | Create default `~/.config/run_block/config` |
 | `run_block --update [--force]` | Self-update `run_block` from GitHub (`vitalio/run_block`) |
