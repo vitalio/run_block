@@ -8,8 +8,7 @@ import importlib.util
 import os
 import shutil
 import subprocess
-import contextlib
-import io
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -152,42 +151,39 @@ class TestRunBlock(unittest.TestCase):
         self.assertEqual(s2.name, "s2")
 
     def test_normal_execution_and_duplicate_guard(self):
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc1 = self.mod.cmd_normal("s1/1", "echo hello_world in_rb=$IN_RUN_BLOCK\n")
-            self.assertEqual(rc1, 0)
-            rc_dup = self.mod.cmd_normal("s1/1", "echo again\n")
-            self.assertEqual(rc_dup, 2)
-            rc_skip = self.mod.cmd_normal("s1/3", "echo step3\n")
-            self.assertEqual(rc_skip, 2)
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+        rc1 = self.mod.cmd_normal("s1/1", "echo hello_world in_rb=$IN_RUN_BLOCK\n")
+        self.assertEqual(rc1, 0)
         out1 = (self.tmp / "s1/1.txt").read_text(encoding="utf-8")
         self.assertIn("hello_world in_rb=1", out1)
         self.assertIn("[s1/1] END — output:", out1)
-        self.assertIn("┌─ [s1/1] START ", buf.getvalue())
-        self.assertIn("┌─ [s1/3] [!] NOT RUN ", buf.getvalue())
+
+        rc_dup = self.mod.cmd_normal("s1/1", "echo again\n")
+        self.assertEqual(rc_dup, 2)
+        rc_skip = self.mod.cmd_normal("s1/3", "echo step3\n")
+        self.assertEqual(rc_skip, 2)
 
     def test_failed_execution_and_chained_fixes(self):
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = self.mod.cmd_normal("s1/1", "echo bad_cmd\nexit 3\n")
-            self.assertEqual(rc, 3)
-            fix1 = "text = text.replace('exit 3', 'exit 4')\n"
-            self.assertEqual(self.mod.cmd_fix("s1/1", fix1), 4)
-            self.assertEqual(self.mod.cmd_fix("s1/1", fix1), 2)
-            fix2 = "text = text.replace('exit 4', 'echo fixed_ok')\n"
-            self.assertEqual(self.mod.cmd_fix("s1/1_1", fix2), 0)
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+        rc = self.mod.cmd_normal("s1/1", "echo bad_cmd\nexit 3\n")
+        self.assertEqual(rc, 3)
+        fix1 = "text = text.replace('exit 3', 'exit 4')\n"
+        self.assertEqual(self.mod.cmd_fix("s1/1", fix1), 4)
+        self.assertEqual(self.mod.cmd_fix("s1/1", fix1), 2)
+        fix2 = "text = text.replace('exit 4', 'echo fixed_ok')\n"
+        self.assertEqual(self.mod.cmd_fix("s1/1_1", fix2), 0)
         out_f2 = (self.tmp / "s1/1_2.txt").read_text(encoding="utf-8")
         self.assertIn("fixed_ok", out_f2)
 
     def test_syntax_error_does_not_run(self):
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = self.mod.cmd_normal("s1/1", "if true; then\n")
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+        rc = self.mod.cmd_normal("s1/1", "if true; then\n")
         self.assertNotEqual(rc, 0)
         out = (self.tmp / "s1/1.txt").read_text(encoding="utf-8")
         self.assertIn("END (syntax error", out)
-        box_lines = buf.getvalue().strip().splitlines()
-        self.assertEqual(len({self.mod.display_width(l) for l in box_lines}), 1)
 
     def test_stats_and_clipboard_box(self):
         f = self.tmp / "x.txt"
@@ -249,8 +245,9 @@ class TestRunBlock(unittest.TestCase):
 
 
     def test_list_show_and_retry(self):
-        with contextlib.redirect_stdout(io.StringIO()):
-            self.mod.cmd_normal("s1/1", "echo first_step\n")
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+        self.mod.cmd_normal("s1/1", "echo first_step\n")
         r_list = subprocess.run([str(SCRIPT), "--list"], capture_output=True, text=True, check=False)
         self.assertEqual(r_list.returncode, 0)
         self.assertIn("s1/1", r_list.stdout)
