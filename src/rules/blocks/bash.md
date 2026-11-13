@@ -52,3 +52,4 @@ RUN_FIX
 ```
 
 - Use the next sequential step (`s1/2`) **only** when the failed run already partially mutated state in a non-idempotent way (e.g. an earlier `text.replace` with `assert count == 1` already modified a file on disk before a later command failed).
+- **Keep multi-file edits atomic in memory:** Validate all `assert text.count(old) == 1` and `ast.parse` checks in memory before calling `.write_text(...)` on any file, so a failed check never mutates disk state and can always be fixed with `--fix`.

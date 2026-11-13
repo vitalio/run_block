@@ -51,3 +51,4 @@ text = text.replace(old, new, 1)
 ```
 
 - Use the next sequential step (`s1/2`) **only** when the failed run already partially mutated state in a non-idempotent way.
+- **Keep multi-file edits atomic in memory:** Validate all `assert text.count(old) == 1` and `ast.parse` checks in memory before calling `.write_text(...)` on any file, so a failed check never mutates disk state and can always be fixed with `--fix`.

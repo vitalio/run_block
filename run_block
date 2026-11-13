@@ -51,7 +51,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.16.0"
+VERSION = "0.16.1"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 
@@ -336,7 +336,11 @@ EMBEDDED_RULES: dict[str, tuple[str, str]] = {'blocks/bash': ('Bash terminal blo
                  '- Use the next sequential step (`s1/2`) **only** when the failed run already '
                  'partially mutated state in a non-idempotent way (e.g. an earlier `text.replace` '
                  'with `assert count == 1` already modified a file on disk before a later command '
-                 'failed).'),
+                 'failed).\n'
+                 '- **Keep multi-file edits atomic in memory:** Validate all `assert '
+                 'text.count(old) == 1` and `ast.parse` checks in memory before calling '
+                 '`.write_text(...)` on any file, so a failed check never mutates disk state and '
+                 'can always be fixed with `--fix`.'),
  'blocks/pwsh': ('PowerShell terminal block execution protocol, fence rules, and mandatory --fix '
                  'preference',
                  '## Terminal blocks (`{cmd:run_block}` v{version:0.13.2})\n'
@@ -427,7 +431,11 @@ EMBEDDED_RULES: dict[str, tuple[str, str]] = {'blocks/bash': ('Bash terminal blo
                  '```\n'
                  '\n'
                  '- Use the next sequential step (`s1/2`) **only** when the failed run already '
-                 'partially mutated state in a non-idempotent way.')}
+                 'partially mutated state in a non-idempotent way.\n'
+                 '- **Keep multi-file edits atomic in memory:** Validate all `assert '
+                 'text.count(old) == 1` and `ast.parse` checks in memory before calling '
+                 '`.write_text(...)` on any file, so a failed check never mutates disk state and '
+                 'can always be fixed with `--fix`.')}
 
 
 RULE_VAR_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*):([^{}]*)\}")
