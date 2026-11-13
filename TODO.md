@@ -8,9 +8,9 @@ Task heading format: `### <emoji> [<STATUS>] <ID>: <title>`
 
 ## Resume
 
-Written 2026-11-13. Released `run_block` `v0.11.0` (`83863e7`):
-- Completed `F6`: split monolithic `run_block` into modular `src/` (`src/templates/*.md`, `src/rules/*.md` with 13 atomic rules, `src/presets.txt` with rule groups `workflow`, `default`, `python-tool`, and 9 `src/*.py` modules) compiled into standalone `./run_block` via `build.py` (verified by `build.py --check` in unit tests).
-- Added support for rule presets, `-<rule>` exclusions, `{var:default}` template variables (`key=val`), and automatic `git`/`cvs` VCS rule detection in `run_block --agents-rules`.
-- Earlier in session: completed `F1`–`F5` (`v0.8.0`–`v0.10.0`). All tasks in `TODO.md` and `TODO_PLAN.md` are complete.
+Written 2026-11-13. Released `run_block` `v0.12.0` (`d6d883b`):
+- Unified `--agents [ITEM ... | -RULE | KEY=VAL | --list]` with a categorized `src/rules/{blocks,core,vcs,release,stack}/` directory hierarchy, removed `src/templates/`, and strengthened the mandatory `--fix` preference rule.
+- Added deferred roadmap tasks `F7` (plugin system + LLM block analyzer + headless protocol mode) and `F8` (standalone `agents_bundle` project) to `TODO_PLAN.md`.
+- Earlier in session: completed `F1`–`F6` (`v0.8.0`–`v0.11.0`).
 
 ## Tasks
