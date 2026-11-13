@@ -8,9 +8,8 @@ Task heading format: `### <emoji> [<STATUS>] <ID>: <title>`
 
 ## Resume
 
-Written 2026-11-13. Released `run_block` `v0.9.0` (`f618c65`):
-- Completed `F5`: added `run_block --rules [TOPIC ... | all | --list]` with built-in reusable engineering rule modules (`workflow`, `semver`, `python-cli`) and custom user rule files in `~/.config/run_block/rules/*.md`, plus in-process execution from `.run_block.start`.
-- Slimmed `AGENTS.md` in both `run_block` and `~/todo_md` to project-specific rules only, loading universal rules via `$ run_block --rules workflow semver python-cli` in `.run_block.start`.
-- Earlier in session: released `v0.8.0` (`15f24a8`) completing `F1` (PowerShell mode), `F2` (custom safety rules), `F3` (`--clean`), and `F4` (`--tree`).
+Written 2026-11-13. Released `run_block` `v0.9.1` (`d489bd8`):
+- Included `$ run_block --rules` (`workflow` by default) in `run_block --start` built-in defaults when `.run_block.start` is absent, and stopped scanning child subdirectories for `.run_block.start`.
+- Earlier in session: released `v0.9.0` (`f618c65`, task `F5`: `run_block --rules`) and `v0.8.0` (`15f24a8`, tasks `F1`–`F4`: PowerShell mode, custom safety rules, `--clean`, and `--tree`).
 
 ## Tasks
