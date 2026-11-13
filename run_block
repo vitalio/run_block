@@ -51,7 +51,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.6.5"
+VERSION = "0.6.6"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 START_FILE_NAME = ".run_block.start"
@@ -738,7 +738,7 @@ def format_safety_box(
         title = f" [{label}] BLOCK PLAN ({meta_str}) "
     else:
         title = f" [{label}] BLOCK PLAN "
-    prompt_suffix = "[Y/n/v(iew)]: " if default_yes else "[y/n/v(iew)]: "
+    prompt_suffix = "[Y/n/v(iew)]:" if default_yes else "[y/n/v(iew)]:"
     prompt_line = f"-> Execute this block? {prompt_suffix}"
     term_cols = shutil.get_terminal_size((100, 24)).columns
     max_row_len = max(64, term_cols - 6)
@@ -768,10 +768,9 @@ def format_safety_box(
         content_lines.extend(_wrap_labeled_items(warn_items, max_row_len, indent=w_indent))
 
     inner_width = max(
-        display_width(title) + 2,
-        display_width(prompt_line) + 3,
+        display_width(title),
+        display_width(prompt_line),
         *(display_width(b) for b in content_lines),
-        52,
     )
     dashes = max(1, inner_width + 2 - display_width(title) - 1)
     top = f"┌─{title}{'─' * dashes}┐"
@@ -785,12 +784,11 @@ def format_safety_box(
     return box, inner_width, cursor_col_offset
 
 
-def format_info_box(title: str, content_lines: list[str], min_width: int = 52) -> str:
+def format_info_box(title: str, content_lines: list[str]) -> str:
     hdr = title if title.startswith(" ") else f" {title} "
     inner_width = max(
-        display_width(hdr) + 2,
+        display_width(hdr),
         *(display_width(b) for b in content_lines),
-        min_width,
     )
     dashes = max(1, inner_width + 2 - display_width(hdr) - 1)
     top = f"┌─{hdr}{'─' * dashes}┐"
@@ -803,14 +801,12 @@ def format_prompt_box(
     title: str,
     content_lines: list[str],
     prompt_line: str,
-    min_width: int = 52,
 ) -> tuple[str, int, int]:
     hdr = title if title.startswith(" ") else f" {title} "
     inner_width = max(
-        display_width(hdr) + 2,
-        display_width(prompt_line) + 3,
+        display_width(hdr),
+        display_width(prompt_line),
         *(display_width(b) for b in content_lines),
-        min_width,
     )
     dashes = max(1, inner_width + 2 - display_width(hdr) - 1)
     top = f"┌─{hdr}{'─' * dashes}┐"
@@ -833,7 +829,7 @@ def prompt_yes_no_box(
     no_status: str = "✗ Canceled by user.",
     tty_streams: tuple[object, object] | None = None,
 ) -> bool:
-    suffix = "[Y/n]: " if default_yes else "[y/N]: "
+    suffix = "[Y/n]:" if default_yes else "[y/N]:"
     prompt_line = f"-> {question} {suffix}"
     box, inner_width, cursor_offset = format_prompt_box(title, content_lines, prompt_line)
     bottom = f"└─{'─' * inner_width}─┘"
@@ -955,7 +951,7 @@ def confirm_execution(
     default_yes = (len(findings) == 0)
     box, inner_width, cursor_offset = format_safety_box(label, findings, default_yes=default_yes, summary=summary)
     bottom = f"└─{'─' * inner_width}─┘"
-    prompt_suffix = "[Y/n/v(iew)]: " if default_yes else "[y/n/v(iew)]: "
+    prompt_suffix = "[Y/n/v(iew)]:" if default_yes else "[y/n/v(iew)]:"
     prompt_line = f"-> Execute this block? {prompt_suffix}"
     try:
         tty_w, tty_r = open_tty()
@@ -977,7 +973,7 @@ def confirm_execution(
                 if action == "no":
                     approved = False
                     break
-            status_line = "✓ Approved by user." if approved else f"✗ Aborted by user (re-run with: {prog_name()} --retry {label})"
+            status_line = "✓ Approved by user." if approved else f"✗ Aborted (--retry {label})"
             tty_w.write(f"\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
             tty_w.flush()
             return approved
@@ -1350,12 +1346,12 @@ def format_clipboard_box(
     else:
         state = "END"
     title = f" [{label}] {state} "
-    line2 = f"-> Press Enter to copy {out_path} to clipboard (v to view, Esc to skip) "
+    line2 = f"-> Press Enter to copy {out_path} to clipboard (v to view, Esc to skip)"
     copied_line = f"✓ Copied {out_path} to clipboard."
     stats_width = display_width(stats) if stats else 0
     inner_width = max(
-        display_width(title) + 2,
-        display_width(line2) + 1,
+        display_width(title),
+        display_width(line2),
         display_width(copied_line),
         stats_width,
     )
@@ -1397,7 +1393,7 @@ def offer_clipboard_copy(
         label, out_path, ok=ok, rc=rc, stats=stats_line(out_path)
     )
     bottom = f"└─{'─' * inner_width}─┘"
-    line2 = f"-> Press Enter to copy {out_path} to clipboard (v to view, Esc to skip) "
+    line2 = f"-> Press Enter to copy {out_path} to clipboard (v to view, Esc to skip)"
     try:
         tty_w, tty_r = open_tty()
         with tty_w, tty_r:

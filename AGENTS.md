@@ -6,6 +6,6 @@
   - `python3 -W error -c 'from pathlib import Path; import ast; ast.parse(Path("run_block").read_text())'`
   - `python3 tests/test_run_block.py -v`
 - **Release rule on CLI/installer changes:** Whenever `run_block`, `install.sh`, or `install.ps1` is modified:
-  1. Bump semantic version in both `VERSION` and `VERSION = "..."` inside `run_block`.
+  1. Bump `VERSION` and `VERSION = "..."` inside `run_block` (PATCH `0.Y.Z+1` for bugfixes, UI/box tweaks, and `--agents`/`--help` updates; MINOR `0.Y+1.0` for new CLI commands/flags or config options; MAJOR `X+1.0.0` only when explicitly requested).
   2. Reinstall locally: `sh install.sh --yes >/dev/null`
   3. Commit, push to `origin main`, and push an annotated release tag (`git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z`).
