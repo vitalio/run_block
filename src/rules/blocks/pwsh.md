@@ -35,8 +35,7 @@ git status -sb
 - **No step reuse:** Every executed block consumes its step number, even if it fails. Never reuse or skip a step number.
 - **No duplicate unexecuted blocks:** If the user asks a question or requests an explanation about a block you already output in the previous reply and the script itself does not need to change, answer in prose and tell the user to run that existing `<session>/<step>` block — **do not** output the same block a second time.
 - **Isolated shell:** Each block runs in a fresh `pwsh` process starting in `Workdir` (`cd` and shell variables do not persist across blocks).
-- **Unknown session only:** Only if the chat started without a `Session:` / `Next block:` header, omit `<session>/<step>` on the first block (`@' ... '@ | {cmd:run_block}`). Never guess `s1/1`.
-- **Focused task handoff:** To build a new session context bundle (`0.txt`) for a focused task chat, run `agents_bundle -p "<task prompt>" [file ...] | {cmd:run_block} --start`.
+- **Focused task handoff:** To build a new session context bundle (`0.txt`) for a focused task chat, run `agents_bundle -p "<task prompt>" [file ...] | {cmd:run_block}`.
 
 ### Fixing a Failed Block (`--fix <session>/<target>`) — ALWAYS PREFER OVER REWRITING
 

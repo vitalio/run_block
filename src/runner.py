@@ -19,23 +19,6 @@ def next_session_name(base: Path) -> str:
     return f"s{n}"
 
 
-def resolve_initial_session(base: Path) -> str:
-    """Returns an existing prepared session (that has no step 1 yet) or the next new session name."""
-    candidates: list[tuple[int, Path]] = []
-    for p in base.iterdir():
-        if p.is_dir():
-            m = re.fullmatch(r"s(\d+)", p.name)
-            if m:
-                candidates.append((int(m.group(1)), p))
-    if candidates:
-        candidates.sort(key=lambda item: item[0])
-        _, latest_dir = candidates[-1]
-        has_blocks = bool(_iter_session_scripts(latest_dir)) or (latest_dir / "1.txt").exists() or (latest_dir / "1.aborted").exists()
-        if not has_blocks:
-            return latest_dir.name
-    return next_session_name(base)
-
-
 def start_session(name: str | None = None, force: bool = False) -> Path:
     base = ensure_base()
     if not name:
@@ -49,7 +32,7 @@ def start_session(name: str | None = None, force: bool = False) -> Path:
                 raise SystemExit(f"{prog_name()}: session {sdir} already exists (use --force to overwrite)")
             if sys.stdout.isatty() and not no_clipboard():
                 ok = prompt_yes_no_box(
-                    f"[{name}] [!] SESSION ALREADY EXISTS",
+                    f"{name} · SESSION ALREADY EXISTS",
                     [f"Session directory already exists: {sdir}"],
                     f"Overwrite session {name}?",
                     default_yes=False,
@@ -103,7 +86,7 @@ def not_run_exit(
     if headless or os.environ.get("RUN_BLOCK_HEADLESS") == "1":
         sys.stdout.write(line)
     else:
-        sys.stdout.write(format_info_box(f"[{label}] [!] NOT RUN", [detail]) + "\n")
+        sys.stdout.write(format_info_box(f"{label} · NOT RUN", [detail]) + "\n")
     sys.stdout.flush()
     err_target = sdir / f"{step_name}.error.txt" if out_path.exists() else out_path
     try:
@@ -158,7 +141,7 @@ def run_script(
             sys.stdout.write(full_output)
         else:
             box_lines = [f"Script: {script_path}", *(msg.rstrip("\n").splitlines())]
-            sys.stdout.write(format_info_box(f"[{label}] [!] SYNTAX ERROR (exit {chk.returncode})", box_lines) + "\n")
+            sys.stdout.write(format_info_box(f"{label} · SYNTAX ERROR (exit {chk.returncode})", box_lines) + "\n")
         sys.stdout.flush()
         write_private(out_path, full_output)
         if not headless:
@@ -180,16 +163,13 @@ def run_script(
 
     start_line = f"[{label}] START (script: {script_path})\n"
     log_chunks: list[str] = [start_line]
-    start_box_lines = [f"Script: {script_path}"]
     for h in header_lines or []:
         log_chunks.append(h)
-        for hl in h.rstrip("\n").splitlines():
-            start_box_lines.append(hl)
     log_chunks.append("\n")
     if headless:
         sys.stdout.write("".join(log_chunks))
-    else:
-        sys.stdout.write(format_info_box(f"[{label}] START", start_box_lines) + "\n\n")
+    elif header_lines:
+        sys.stdout.write("".join(header_lines) + "\n")
     sys.stdout.flush()
 
     tty_in = None
@@ -275,7 +255,7 @@ def run_script(
     if headless:
         sys.stdout.write(end_line)
     elif in_run_block() or not sys.stdout.isatty() or clipboard_mode() != "prompt":
-        sys.stdout.write("\n" + format_info_box(f"[{label}] END{exit_str}", [f"Output: {out_path}"]) + "\n")
+        sys.stdout.write("\n" + format_info_box(f"{label} · END{exit_str}", [f"Output: {out_path}"]) + "\n")
     sys.stdout.flush()
     full_output = CR_LINE_RE.sub("", ANSI_RE.sub("", "".join(log_chunks))).replace("\r\n", "\n")
     write_private(out_path, full_output)
@@ -305,7 +285,7 @@ def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
     elif script_path.exists() or out_path.exists():
         if sys.stdout.isatty() and not no_clipboard() and not headless:
             if prompt_yes_no_box(
-                f"[{label}] [!] STEP ALREADY EXISTS",
+                f"{label} · STEP ALREADY EXISTS",
                 [f"Step file already exists: {script_path}"],
                 f"Overwrite and re-run {label}?",
                 default_yes=False,
@@ -321,7 +301,7 @@ def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
         allow_skip = False
         if sys.stdout.isatty() and not no_clipboard() and not headless:
             allow_skip = prompt_yes_no_box(
-                f"[{label}] [!] MISSING PREVIOUS STEP",
+                f"{label} · MISSING PREVIOUS STEP",
                 [f"Previous step {prev_label} has not been run yet."],
                 f"Run {label} anyway?",
                 default_yes=False,
@@ -589,7 +569,7 @@ def cmd_clean(argv: list[str]) -> int:
     names = ", ".join(d.name for d in to_remove)
     if not yes and sys.stdin.isatty() and sys.stdout.isatty() and not no_clipboard():
         ok = prompt_yes_no_box(
-            "[CLEAN] [!] PRUNE SESSIONS",
+            "CLEAN SESSIONS",
             [
                 f"Directory: {base}",
                 f"Sessions to remove ({len(to_remove)}): {names}",

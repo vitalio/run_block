@@ -238,7 +238,7 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
                 if pe:
                     parts.append("calls: " + ", ".join(pe))
                 desc = f"{len(py_buf)} lines" + (f" — {'; '.join(parts)}" if parts else "")
-                add_op(f"python #{py_blocks}", desc)
+                add_op("python", desc)
                 py_eof = None
                 py_buf = []
             else:

@@ -103,8 +103,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args:
         if not sys.stdin.isatty():
-            session = resolve_initial_session(ensure_base())
-            return cmd_normal(f"{session}/1", sys.stdin.read(), auto_yes=auto_yes)
+            return cmd_start([])
         sys.stderr.write(usage_text())
         return 2
 
@@ -145,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if len(args) != 1 or args[0].startswith("-"):
         raise SystemExit(
-            f"{prog}: usage: {prog} [-y] [<session>/<step>] (or --plan / --fix / --retry / --list / --show / --clean / --start / --agents / --update / --version / --help)"
+            f"{prog}: usage: {prog} [-y] <session>/<step> (or pipe bundle to '{prog}' to start a session; see --help)"
         )
     return cmd_normal(args[0], sys.stdin.read(), auto_yes=auto_yes)
 

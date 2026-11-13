@@ -174,7 +174,6 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("CRITICAL — STRICT LAYOUT & MARKDOWN FENCE RULES", r_md.stdout)
         self.assertIn("ONE BLOCK PER MESSAGE, ALWAYS AT THE VERY END (BATCH COMMANDS INSIDE IT)", r_md.stdout)
         self.assertIn("run_block s1/1 <<'RUN_BLOCK'", r_md.stdout)
-        self.assertIn("run_block <<'RUN_BLOCK'", r_md.stdout)
         self.assertNotIn("/tmp/", r_md.stdout)
 
         custom_bin = self.tmp / "run_term_block"
@@ -185,7 +184,6 @@ class TestRunBlock(unittest.TestCase):
         self.assertEqual(rc_md.returncode, 0)
         self.assertIn("## Terminal blocks (`run_term_block`", rc_md.stdout)
         self.assertIn("run_term_block s1/1 <<'RUN_BLOCK'", rc_md.stdout)
-        self.assertIn("run_term_block <<'RUN_BLOCK'", rc_md.stdout)
     def test_start_autoincrement(self):
         s1 = self.mod.start_session()
         s2 = self.mod.start_session()
@@ -204,8 +202,8 @@ class TestRunBlock(unittest.TestCase):
         out1 = (self.tmp / "s1/1.txt").read_text(encoding="utf-8")
         self.assertIn("hello_world in_rb=1", out1)
         self.assertIn("[s1/1] END — output:", out1)
-        self.assertIn("┌─ [s1/1] START ", buf.getvalue())
-        self.assertIn("┌─ [s1/3] [!] NOT RUN ", buf.getvalue())
+        self.assertIn("┌─ s1/1 · END ", buf.getvalue())
+        self.assertIn("┌─ s1/3 · NOT RUN ", buf.getvalue())
 
     def test_failed_execution_and_chained_fixes(self):
         buf = io.StringIO()
@@ -307,28 +305,44 @@ class TestRunBlock(unittest.TestCase):
         self.assertEqual(r_retry.returncode, 0)
         self.assertIn("first_step", r_retry.stdout)
 
-    def test_implicit_first_block_and_stdin_start_bundle(self):
+    def test_stdin_start_bundle_without_args_and_with_start_flag(self):
         proj = self.tmp / "proj"
         proj.mkdir()
         env = {**os.environ, "RUN_BLOCK_DIR": str(self.tmp / "sessions"), "RUN_BLOCK_CWD": str(proj)}
 
-        r_first = subprocess.run(
+        bundle_input = "===== File: AGENTS.md =====\n# My Project Rules\n\n===== Prompt =====\nWork on task F1\n"
+        r_pipe = subprocess.run(
             [str(SCRIPT)],
-            input="echo implicit_s1_step1\n",
+            input=bundle_input,
             capture_output=True,
             text=True,
             cwd=str(proj),
             env=env,
             check=False,
         )
-        self.assertEqual(r_first.returncode, 0, r_first.stderr)
-        self.assertIn("[s1/1] START", r_first.stdout)
-        self.assertIn("implicit_s1_step1", r_first.stdout)
-        self.assertTrue((self.tmp / "sessions/s1/1.txt").is_file())
+        self.assertEqual(r_pipe.returncode, 0, r_pipe.stderr)
+        self.assertIn("Session: s1", r_pipe.stdout)
+        self.assertIn("Next block: s1/1", r_pipe.stdout)
+        bundle1 = (self.tmp / "sessions/s1/0.txt").read_text(encoding="utf-8")
+        self.assertIn("Session: s1\nNext block: s1/1\nWorkdir:", bundle1)
+        self.assertIn("===== File: AGENTS.md =====", bundle1)
+        self.assertIn("Work on task F1", bundle1)
 
-        bundle_input = "===== File: AGENTS.md =====\n# My Project Rules\n\n===== Prompt =====\nWork on task F1\n"
+        r_step1 = subprocess.run(
+            [str(SCRIPT), "s1/1"],
+            input="echo ran_s1_step1\n",
+            capture_output=True,
+            text=True,
+            cwd=str(proj),
+            env=env,
+            check=False,
+        )
+        self.assertEqual(r_step1.returncode, 0, r_step1.stderr)
+        self.assertIn("s1/1 · END", r_step1.stdout)
+        self.assertIn("ran_s1_step1", r_step1.stdout)
+
         r_start = subprocess.run(
-            [str(SCRIPT), "--start"],
+            [str(SCRIPT), "--start", "--session", "s2"],
             input=bundle_input,
             capture_output=True,
             text=True,
@@ -338,24 +352,6 @@ class TestRunBlock(unittest.TestCase):
         )
         self.assertEqual(r_start.returncode, 0, r_start.stderr)
         self.assertIn("Session: s2", r_start.stdout)
-        self.assertIn("Next block: s2/1", r_start.stdout)
-        bundle = (self.tmp / "sessions/s2/0.txt").read_text(encoding="utf-8")
-        self.assertIn("Session: s2\nNext block: s2/1\nWorkdir:", bundle)
-        self.assertIn("===== File: AGENTS.md =====", bundle)
-        self.assertIn("Work on task F1", bundle)
-
-        r_reuse = subprocess.run(
-            [str(SCRIPT)],
-            input="echo reused_s2_step1\n",
-            capture_output=True,
-            text=True,
-            cwd=str(proj),
-            env=env,
-            check=False,
-        )
-        self.assertEqual(r_reuse.returncode, 0, r_reuse.stderr)
-        self.assertIn("[s2/1] START", r_reuse.stdout)
-        self.assertIn("reused_s2_step1", r_reuse.stdout)
 
         r_show0 = subprocess.run(
             [str(SCRIPT), "--show", "s2/0"],
@@ -369,12 +365,12 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("Bundle:", r_show0.stdout)
 
     def test_info_and_prompt_boxes_and_skipped_step_confirmation(self):
-        info_box = self.mod.format_info_box("[s1/0] START BUNDLE", ["Session: s1", "Next block: s1/1"])
-        self.assertIn("┌─ [s1/0] START BUNDLE ", info_box)
+        info_box = self.mod.format_info_box("s1/0 · START BUNDLE", ["Session: s1", "Next block: s1/1"])
+        self.assertIn("┌─ s1/0 · START BUNDLE ", info_box)
         self.assertEqual(len({self.mod.display_width(l) for l in info_box.splitlines()}), 1)
 
         p_box, _, _ = self.mod.format_prompt_box(
-            "[s1/2] [!] MISSING PREVIOUS STEP",
+            "s1/2 · MISSING PREVIOUS STEP",
             ["Previous step s1/1 has not been run yet."],
             "-> Run s1/2 anyway? [y/N]: ",
         )
@@ -384,7 +380,7 @@ class TestRunBlock(unittest.TestCase):
         tty_w = io.StringIO()
         tty_r = io.StringIO("y\n")
         ok = self.mod.prompt_yes_no_box(
-            "[s1/2] [!] MISSING PREVIOUS STEP",
+            "s1/2 · MISSING PREVIOUS STEP",
             ["Previous step s1/1 has not been run yet."],
             "Run s1/2 anyway?",
             default_yes=False,
@@ -494,6 +490,15 @@ class TestRunBlock(unittest.TestCase):
         self.assertEqual(ops[0][0], "write")
         self.assertIn("cat <<'EOF' > src/example.py (40 lines)", ops[0][1])
         self.assertEqual(ops[1], ("git", "git status -sb"))
+
+        multi_cd = "cd /tmp\nls -la\ncd /var\nls -la\n"
+        sum_cd = rb_mod.summarize_script_actions(multi_cd, Path("/home"))
+        box_cd, _, _ = rb_mod.format_safety_box("s1/4", [], default_yes=True, summary=sum_cd)
+        self.assertIn("┌─ s1/4 · BLOCK PLAN ", box_cd)
+        self.assertIn("│   /tmp:", box_cd)
+        stripped_lines = [l.strip("│ ") for l in box_cd.splitlines()]
+        idx_var = stripped_lines.index("/var:")
+        self.assertEqual(stripped_lines[idx_var - 1], "")
 
 
 if __name__ == "__main__":

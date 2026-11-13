@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # run_block-repo: vitalio/run_block
 """Usage:
-  {prog} [-y] [<session>/<step>]     Run block from stdin (-y/--yes for non-interactive headless mode)
+  agents_bundle | {prog}             Start a new session from stdin context bundle into {base_dir}/<session>/0.txt
+  {prog} [-y] <session>/<step>       Run block from stdin (-y/--yes for non-interactive headless mode)
   {prog} --plan                      Analyze script from stdin and print JSON execution & safety plan
   {prog} --fix [-y] <session>/<ref>  Patch <ref> script via Python on stdin and run as <ref>_N
   {prog} --retry [-y] [session/step] Re-run the last (or specified) block
   {prog} --list | -l [session]       List sessions or blocks in a session
   {prog} --show [session/step]       Show script and output of a block (or <session>/0 bundle)
   {prog} --clean [--keep N | --all]  Prune old session directories in {base_dir} (default: --keep 5)
-  {prog} --start [opts]              Read context bundle from stdin into {base_dir}/<session>/0.txt
-                                        Usage: agents_bundle | {prog} --start [--session NAME] [--force]
+  {prog} --start [opts]              Start session with explicit options (--session NAME, --force)
   {prog} --agents                    Print Markdown instructions for AI agents
   {prog} --update [--force]          Self-update {prog} from GitHub (vitalio/run_block)
   {prog} --check-update              Check if a newer version is available
@@ -51,7 +51,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.14.0"
+VERSION = "0.15.0"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 
@@ -309,12 +309,9 @@ EMBEDDED_RULES: dict[str, tuple[str, str]] = {'blocks/bash': ('Bash terminal blo
                  'second time.\n'
                  '- **Isolated shell:** Each block runs in a fresh `bash` process starting in '
                  '`Workdir` (`cd` and shell variables do not persist across blocks).\n'
-                 '- **Unknown session only:** Only if the chat started without a `Session:` / '
-                 '`Next block:` header, omit `<session>/<step>` on the first block '
-                 "(`{cmd:run_block} <<'RUN_BLOCK'`). Never guess `s1/1`.\n"
                  '- **Focused task handoff:** To build a new session context bundle (`0.txt`) for '
                  'a focused task chat, run `agents_bundle -p "<task prompt>" [file ...] | '
-                 '{cmd:run_block} --start`.\n'
+                 '{cmd:run_block}`.\n'
                  '\n'
                  '### Fixing a Failed Block (`--fix <session>/<target>`) — ALWAYS PREFER OVER '
                  'REWRITING\n'
@@ -407,12 +404,9 @@ EMBEDDED_RULES: dict[str, tuple[str, str]] = {'blocks/bash': ('Bash terminal blo
                  'second time.\n'
                  '- **Isolated shell:** Each block runs in a fresh `pwsh` process starting in '
                  '`Workdir` (`cd` and shell variables do not persist across blocks).\n'
-                 '- **Unknown session only:** Only if the chat started without a `Session:` / '
-                 "`Next block:` header, omit `<session>/<step>` on the first block (`@' ... '@ | "
-                 '{cmd:run_block}`). Never guess `s1/1`.\n'
                  '- **Focused task handoff:** To build a new session context bundle (`0.txt`) for '
                  'a focused task chat, run `agents_bundle -p "<task prompt>" [file ...] | '
-                 '{cmd:run_block} --start`.\n'
+                 '{cmd:run_block}`.\n'
                  '\n'
                  '### Fixing a Failed Block (`--fix <session>/<target>`) — ALWAYS PREFER OVER '
                  'REWRITING\n'
@@ -690,7 +684,7 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
                 if pe:
                     parts.append("calls: " + ", ".join(pe))
                 desc = f"{len(py_buf)} lines" + (f" — {'; '.join(parts)}" if parts else "")
-                add_op(f"python #{py_blocks}", desc)
+                add_op("python", desc)
                 py_eof = None
                 py_buf = []
             else:
@@ -1061,12 +1055,12 @@ def format_safety_box(
     meta_str = str(summary.get('meta', '')) if summary else ''
     if findings:
         plural = "s" if len(findings) != 1 else ""
-        hdr_detail = f"{meta_str} | {len(findings)} safety warning{plural}" if meta_str else f"{len(findings)} safety warning{plural}"
-        title = f" [{label}] [!] BLOCK PLAN ({hdr_detail}) "
+        hdr_detail = f"{meta_str} · {len(findings)} safety warning{plural}" if meta_str else f"{len(findings)} safety warning{plural}"
+        title = f" {label} · BLOCK PLAN ({hdr_detail}) "
     elif meta_str:
-        title = f" [{label}] BLOCK PLAN ({meta_str}) "
+        title = f" {label} · BLOCK PLAN ({meta_str}) "
     else:
-        title = f" [{label}] BLOCK PLAN "
+        title = f" {label} · BLOCK PLAN "
     prompt_suffix = "[Y/n/v(iew)]:" if default_yes else "[y/n/v(iew)]:"
     prompt_line = f"-> Execute this block? {prompt_suffix}"
     term_cols = shutil.get_terminal_size((100, 24)).columns
@@ -1087,7 +1081,9 @@ def format_safety_box(
                 content_lines.append("")
             content_lines.append("Operations:")
             if has_subdirs and op_groups:
-                for g_dir, g_items in op_groups:
+                for idx, (g_dir, g_items) in enumerate(op_groups):
+                    if idx > 0:
+                        content_lines.append("")
                     dir_hdr = g_dir if g_dir else (wdir or ".")
                     content_lines.append(f"  {dir_hdr}:")
                     content_lines.extend(_wrap_labeled_items(g_items, max_row_len, indent="    "))
@@ -1337,7 +1333,8 @@ def confirm_execution(
                 if action == "no":
                     approved = False
                     break
-            status_line = "✓ Approved by user." if approved else f"✗ Aborted (--retry {label})"
+            run_target = str(script_path) if script_path is not None else label
+            status_line = f"✓ Running {run_target} ..." if approved else f"✗ Aborted (--retry {label})"
             tty_w.write(f"\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
             tty_w.flush()
             return approved, ("" if approved else f"aborted by user (re-run with: {prog_name()} --retry {label})")
@@ -1459,7 +1456,7 @@ def format_clipboard_box(
         state = f"END (exit {rc})"
     else:
         state = "END"
-    title = f" [{label}] {state} "
+    title = f" {label} · {state} "
     line2 = f"-> Press Enter to copy {out_path} to clipboard (v to view, Esc to skip)"
     copied_line = f"✓ Copied {out_path} to clipboard."
     stats_width = display_width(stats) if stats else 0
@@ -1557,23 +1554,6 @@ def next_session_name(base: Path) -> str:
     return f"s{n}"
 
 
-def resolve_initial_session(base: Path) -> str:
-    """Returns an existing prepared session (that has no step 1 yet) or the next new session name."""
-    candidates: list[tuple[int, Path]] = []
-    for p in base.iterdir():
-        if p.is_dir():
-            m = re.fullmatch(r"s(\d+)", p.name)
-            if m:
-                candidates.append((int(m.group(1)), p))
-    if candidates:
-        candidates.sort(key=lambda item: item[0])
-        _, latest_dir = candidates[-1]
-        has_blocks = bool(_iter_session_scripts(latest_dir)) or (latest_dir / "1.txt").exists() or (latest_dir / "1.aborted").exists()
-        if not has_blocks:
-            return latest_dir.name
-    return next_session_name(base)
-
-
 def start_session(name: str | None = None, force: bool = False) -> Path:
     base = ensure_base()
     if not name:
@@ -1587,7 +1567,7 @@ def start_session(name: str | None = None, force: bool = False) -> Path:
                 raise SystemExit(f"{prog_name()}: session {sdir} already exists (use --force to overwrite)")
             if sys.stdout.isatty() and not no_clipboard():
                 ok = prompt_yes_no_box(
-                    f"[{name}] [!] SESSION ALREADY EXISTS",
+                    f"{name} · SESSION ALREADY EXISTS",
                     [f"Session directory already exists: {sdir}"],
                     f"Overwrite session {name}?",
                     default_yes=False,
@@ -1641,7 +1621,7 @@ def not_run_exit(
     if headless or os.environ.get("RUN_BLOCK_HEADLESS") == "1":
         sys.stdout.write(line)
     else:
-        sys.stdout.write(format_info_box(f"[{label}] [!] NOT RUN", [detail]) + "\n")
+        sys.stdout.write(format_info_box(f"{label} · NOT RUN", [detail]) + "\n")
     sys.stdout.flush()
     err_target = sdir / f"{step_name}.error.txt" if out_path.exists() else out_path
     try:
@@ -1696,7 +1676,7 @@ def run_script(
             sys.stdout.write(full_output)
         else:
             box_lines = [f"Script: {script_path}", *(msg.rstrip("\n").splitlines())]
-            sys.stdout.write(format_info_box(f"[{label}] [!] SYNTAX ERROR (exit {chk.returncode})", box_lines) + "\n")
+            sys.stdout.write(format_info_box(f"{label} · SYNTAX ERROR (exit {chk.returncode})", box_lines) + "\n")
         sys.stdout.flush()
         write_private(out_path, full_output)
         if not headless:
@@ -1718,16 +1698,13 @@ def run_script(
 
     start_line = f"[{label}] START (script: {script_path})\n"
     log_chunks: list[str] = [start_line]
-    start_box_lines = [f"Script: {script_path}"]
     for h in header_lines or []:
         log_chunks.append(h)
-        for hl in h.rstrip("\n").splitlines():
-            start_box_lines.append(hl)
     log_chunks.append("\n")
     if headless:
         sys.stdout.write("".join(log_chunks))
-    else:
-        sys.stdout.write(format_info_box(f"[{label}] START", start_box_lines) + "\n\n")
+    elif header_lines:
+        sys.stdout.write("".join(header_lines) + "\n")
     sys.stdout.flush()
 
     tty_in = None
@@ -1813,7 +1790,7 @@ def run_script(
     if headless:
         sys.stdout.write(end_line)
     elif in_run_block() or not sys.stdout.isatty() or clipboard_mode() != "prompt":
-        sys.stdout.write("\n" + format_info_box(f"[{label}] END{exit_str}", [f"Output: {out_path}"]) + "\n")
+        sys.stdout.write("\n" + format_info_box(f"{label} · END{exit_str}", [f"Output: {out_path}"]) + "\n")
     sys.stdout.flush()
     full_output = CR_LINE_RE.sub("", ANSI_RE.sub("", "".join(log_chunks))).replace("\r\n", "\n")
     write_private(out_path, full_output)
@@ -1843,7 +1820,7 @@ def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
     elif script_path.exists() or out_path.exists():
         if sys.stdout.isatty() and not no_clipboard() and not headless:
             if prompt_yes_no_box(
-                f"[{label}] [!] STEP ALREADY EXISTS",
+                f"{label} · STEP ALREADY EXISTS",
                 [f"Step file already exists: {script_path}"],
                 f"Overwrite and re-run {label}?",
                 default_yes=False,
@@ -1859,7 +1836,7 @@ def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
         allow_skip = False
         if sys.stdout.isatty() and not no_clipboard() and not headless:
             allow_skip = prompt_yes_no_box(
-                f"[{label}] [!] MISSING PREVIOUS STEP",
+                f"{label} · MISSING PREVIOUS STEP",
                 [f"Previous step {prev_label} has not been run yet."],
                 f"Run {label} anyway?",
                 default_yes=False,
@@ -2127,7 +2104,7 @@ def cmd_clean(argv: list[str]) -> int:
     names = ", ".join(d.name for d in to_remove)
     if not yes and sys.stdin.isatty() and sys.stdout.isatty() and not no_clipboard():
         ok = prompt_yes_no_box(
-            "[CLEAN] [!] PRUNE SESSIONS",
+            "CLEAN SESSIONS",
             [
                 f"Directory: {base}",
                 f"Sessions to remove ({len(to_remove)}): {names}",
@@ -2199,18 +2176,18 @@ def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
             session_arg = argv[i + 1]
             i += 2
         elif a.startswith("-"):
-            raise SystemExit(f"{prog}: usage: agents_bundle | {prog} --start [--session NAME] [--force]")
+            raise SystemExit(f"{prog}: usage: agents_bundle | {prog} [--start] [--session NAME] [--force]")
         else:
             if session_arg is None and re.fullmatch(r"s\d+", a):
                 session_arg = a
                 i += 1
             else:
-                raise SystemExit(f"{prog}: usage: agents_bundle | {prog} --start [--session NAME] [--force]")
+                raise SystemExit(f"{prog}: usage: agents_bundle | {prog} [--start] [--session NAME] [--force]")
 
     if stdin_text is None:
         if sys.stdin.isatty():
             sys.stderr.write(
-                f"{prog}: --start expects a context bundle on stdin (e.g. 'agents_bundle | {prog} --start')\n"
+                f"{prog}: --start expects a context bundle on stdin (e.g. 'agents_bundle | {prog}')\n"
             )
             return 2
         stdin_text = sys.stdin.read()
@@ -2221,7 +2198,7 @@ def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
     res = format_start_bundle(session_name=session_name, stdin_body=stdin_text)
     write_private(bundle_path, str(res["full"]), overwrite=True)
     hdr_lines = [*list(res["console_lines"]), f"Bundle: {bundle_path}"]
-    sys.stdout.write(format_info_box(f"[{session_name}/0] START BUNDLE", hdr_lines) + "\n")
+    sys.stdout.write(format_info_box(f"{session_name}/0 · START BUNDLE", hdr_lines) + "\n")
     sys.stdout.flush()
     if not in_run_block():
         offer_clipboard_copy(f"{session_name}/0", bundle_path, ok=True, rc=0)
@@ -2333,8 +2310,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args:
         if not sys.stdin.isatty():
-            session = resolve_initial_session(ensure_base())
-            return cmd_normal(f"{session}/1", sys.stdin.read(), auto_yes=auto_yes)
+            return cmd_start([])
         sys.stderr.write(usage_text())
         return 2
 
@@ -2375,7 +2351,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if len(args) != 1 or args[0].startswith("-"):
         raise SystemExit(
-            f"{prog}: usage: {prog} [-y] [<session>/<step>] (or --plan / --fix / --retry / --list / --show / --clean / --start / --agents / --update / --version / --help)"
+            f"{prog}: usage: {prog} [-y] <session>/<step> (or pipe bundle to '{prog}' to start a session; see --help)"
         )
     return cmd_normal(args[0], sys.stdin.read(), auto_yes=auto_yes)
 

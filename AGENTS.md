@@ -2,7 +2,13 @@
 
 Universal workflow, language, Git, SemVer, Python CLI, and single-file build rules are loaded via `.agents_bundle`.
 
-## Release trigger & local reinstall
+## Architecture & Module Boundaries
 
-- Edit source files under `src/` (`src/*.py`, `src/rules/blocks/*.md`) and run `python3 build.py` to regenerate `./run_block`.
-- Whenever `src/`, `install.sh`, or `install.ps1` is modified, bump `VERSION` and `VERSION = "..."` in `src/header.py`, run `python3 build.py`, reinstall locally via `sh install.sh --yes >/dev/null`, commit, push to `origin main`, and push annotated tag `vX.Y.Z`.
+- `src/header.py` — CLI usage docstring, standard library imports, and version constants.
+- `src/config.py` — zero-config environment variable settings (`RUN_BLOCK_*`, `VISUAL`/`EDITOR`) and working directory resolution.
+- `src/agents.py` & `src/rules/blocks/*.md` — embedded Markdown instructions emitted by `run_block --agents`.
+- `src/safety.py` — AST/regex operation classifier, safety risk scanner, `run_block --plan` JSON output, and `RUN_BLOCK_APPROVE_CMD` validator hook.
+- `src/ui.py` — terminal TUI boxes (`BLOCK PLAN`, `START`, `END`), token statistics, and clipboard integration.
+- `src/runner.py` — sequential session/step execution (`<session>/<step>`), `--fix` patching, `--retry`, `--list`, `--show`, `--clean`, and `-y`/`--yes` headless mode.
+- `src/bundle.py` — session initialization (`agents_bundle | run_block` -> `<session>/0.txt`).
+- `src/cli.py` — CLI argument routing and self-update (`--update`, `--check-update`).

@@ -47,18 +47,18 @@ def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
             session_arg = argv[i + 1]
             i += 2
         elif a.startswith("-"):
-            raise SystemExit(f"{prog}: usage: agents_bundle | {prog} --start [--session NAME] [--force]")
+            raise SystemExit(f"{prog}: usage: agents_bundle | {prog} [--start] [--session NAME] [--force]")
         else:
             if session_arg is None and re.fullmatch(r"s\d+", a):
                 session_arg = a
                 i += 1
             else:
-                raise SystemExit(f"{prog}: usage: agents_bundle | {prog} --start [--session NAME] [--force]")
+                raise SystemExit(f"{prog}: usage: agents_bundle | {prog} [--start] [--session NAME] [--force]")
 
     if stdin_text is None:
         if sys.stdin.isatty():
             sys.stderr.write(
-                f"{prog}: --start expects a context bundle on stdin (e.g. 'agents_bundle | {prog} --start')\n"
+                f"{prog}: --start expects a context bundle on stdin (e.g. 'agents_bundle | {prog}')\n"
             )
             return 2
         stdin_text = sys.stdin.read()
@@ -69,7 +69,7 @@ def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
     res = format_start_bundle(session_name=session_name, stdin_body=stdin_text)
     write_private(bundle_path, str(res["full"]), overwrite=True)
     hdr_lines = [*list(res["console_lines"]), f"Bundle: {bundle_path}"]
-    sys.stdout.write(format_info_box(f"[{session_name}/0] START BUNDLE", hdr_lines) + "\n")
+    sys.stdout.write(format_info_box(f"{session_name}/0 · START BUNDLE", hdr_lines) + "\n")
     sys.stdout.flush()
     if not in_run_block():
         offer_clipboard_copy(f"{session_name}/0", bundle_path, ok=True, rc=0)

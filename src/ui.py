@@ -82,12 +82,12 @@ def format_safety_box(
     meta_str = str(summary.get('meta', '')) if summary else ''
     if findings:
         plural = "s" if len(findings) != 1 else ""
-        hdr_detail = f"{meta_str} | {len(findings)} safety warning{plural}" if meta_str else f"{len(findings)} safety warning{plural}"
-        title = f" [{label}] [!] BLOCK PLAN ({hdr_detail}) "
+        hdr_detail = f"{meta_str} · {len(findings)} safety warning{plural}" if meta_str else f"{len(findings)} safety warning{plural}"
+        title = f" {label} · BLOCK PLAN ({hdr_detail}) "
     elif meta_str:
-        title = f" [{label}] BLOCK PLAN ({meta_str}) "
+        title = f" {label} · BLOCK PLAN ({meta_str}) "
     else:
-        title = f" [{label}] BLOCK PLAN "
+        title = f" {label} · BLOCK PLAN "
     prompt_suffix = "[Y/n/v(iew)]:" if default_yes else "[y/n/v(iew)]:"
     prompt_line = f"-> Execute this block? {prompt_suffix}"
     term_cols = shutil.get_terminal_size((100, 24)).columns
@@ -108,7 +108,9 @@ def format_safety_box(
                 content_lines.append("")
             content_lines.append("Operations:")
             if has_subdirs and op_groups:
-                for g_dir, g_items in op_groups:
+                for idx, (g_dir, g_items) in enumerate(op_groups):
+                    if idx > 0:
+                        content_lines.append("")
                     dir_hdr = g_dir if g_dir else (wdir or ".")
                     content_lines.append(f"  {dir_hdr}:")
                     content_lines.extend(_wrap_labeled_items(g_items, max_row_len, indent="    "))
@@ -358,7 +360,8 @@ def confirm_execution(
                 if action == "no":
                     approved = False
                     break
-            status_line = "✓ Approved by user." if approved else f"✗ Aborted (--retry {label})"
+            run_target = str(script_path) if script_path is not None else label
+            status_line = f"✓ Running {run_target} ..." if approved else f"✗ Aborted (--retry {label})"
             tty_w.write(f"\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
             tty_w.flush()
             return approved, ("" if approved else f"aborted by user (re-run with: {prog_name()} --retry {label})")
@@ -480,7 +483,7 @@ def format_clipboard_box(
         state = f"END (exit {rc})"
     else:
         state = "END"
-    title = f" [{label}] {state} "
+    title = f" {label} · {state} "
     line2 = f"-> Press Enter to copy {out_path} to clipboard (v to view, Esc to skip)"
     copied_line = f"✓ Copied {out_path} to clipboard."
     stats_width = display_width(stats) if stats else 0
