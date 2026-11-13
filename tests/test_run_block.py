@@ -445,5 +445,21 @@ class TestRunBlock(unittest.TestCase):
         self.assertEqual([p.name for p in self.tmp.iterdir() if p.is_dir()], [])
 
 
+    def test_heredoc_collapsed_in_block_plan(self):
+        rb_mod = load_module()
+        script = (
+            "cat <<'EOF' > src/example.py\n"
+            + "\n".join(f"line_{i} = {i}" for i in range(40))
+            + "\nEOF\n"
+            "git status -sb\n"
+        )
+        summary = rb_mod.summarize_script_actions(script, Path("/tmp"))
+        ops = summary["operations"]
+        self.assertEqual(len(ops), 2)
+        self.assertEqual(ops[0][0], "Write/FS")
+        self.assertIn("cat <<'EOF' > src/example.py (40 lines)", ops[0][1])
+        self.assertEqual(ops[1], ("Git", "git status -sb"))
+
+
 if __name__ == "__main__":
     unittest.main()

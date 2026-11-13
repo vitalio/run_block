@@ -110,6 +110,8 @@ def get_active_risk_rules() -> list[tuple[str, str, re.Pattern[str]]]:
     return active
 
 PY_HEREDOC_START_RE = re.compile(r"python3?\s+-[^\n]*<<-?['\"]?([A-Za-z0-9_]+)['\"]?")
+SHELL_HEREDOC_START_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
+HEREDOC_REDIRECT_TARGET_RE = re.compile(r">>?\s*([^\s;<>&|]+)")
 
 
 def _add_unique(items: list[str], val: str, limit: int = 12) -> None:
@@ -203,6 +205,9 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
     py_eof: str | None = None
     py_buf: list[str] = []
     py_start = 0
+    sh_eof: str | None = None
+    sh_cmd: str = ""
+    sh_lines: int = 0
 
     for idx, raw in enumerate(lines, start=1):
         s = raw.strip()
@@ -232,6 +237,26 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
             else:
                 py_buf.append(raw)
             continue
+        if sh_eof is not None:
+            if s == sh_eof:
+                line_lbl = f"{sh_lines} line{'s' if sh_lines != 1 else ''}"
+                m_redir = HEREDOC_REDIRECT_TARGET_RE.search(sh_cmd)
+                if m_redir:
+                    target_f = m_redir.group(1).strip("'\"")
+                    _add_unique(writes, target_f)
+                    operations.append(("Write/FS", f"{sh_cmd} ({line_lbl})"))
+                elif re.match(r"^git\s+", sh_cmd):
+                    _add_unique(git_cmds, sh_cmd)
+                    operations.append(("Git", f"{sh_cmd} ({line_lbl})"))
+                else:
+                    _add_unique(exec_cmds, sh_cmd)
+                    operations.append(("Exec", f"{sh_cmd} ({line_lbl})"))
+                sh_eof = None
+                sh_cmd = ""
+                sh_lines = 0
+            else:
+                sh_lines += 1
+            continue
         if not s or s.startswith("#"):
             continue
         m_py = PY_HEREDOC_START_RE.search(s)
@@ -240,6 +265,12 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
             py_eof = m_py.group(1)
             py_buf = []
             py_start = idx
+            continue
+        m_sh = SHELL_HEREDOC_START_RE.search(s)
+        if m_sh:
+            sh_eof = m_sh.group(1)
+            sh_cmd = s
+            sh_lines = 0
             continue
         if re.match(r"^(?:echo|printf)\b", s) and ">" not in s:
             continue
@@ -301,6 +332,8 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
     py_eof_token: str | None = None
     py_buf: list[str] = []
     py_start = 0
+    sh_eof_token: str | None = None
+    sh_scan_body: bool = False
     for idx, raw_line in enumerate(script_text.splitlines(), start=1):
         stripped = raw_line.strip()
         if py_eof_token is not None:
@@ -315,6 +348,13 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
             else:
                 py_buf.append(raw_line)
             continue
+        if sh_eof_token is not None:
+            if stripped == sh_eof_token:
+                sh_eof_token = None
+                sh_scan_body = False
+                continue
+            if not sh_scan_body:
+                continue
 
         if not stripped or stripped.startswith("#"):
             continue
@@ -324,6 +364,11 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
             py_buf = []
             py_start = idx
             continue
+        if sh_eof_token is None:
+            m_sh = SHELL_HEREDOC_START_RE.search(stripped)
+            if m_sh:
+                sh_eof_token = m_sh.group(1)
+                sh_scan_body = bool(re.search(r"\b(?:sh|bash|zsh|sudo|eval)\b", stripped))
         for category, desc, pat in active_rules:
             if pat.search(stripped):
                 clean_snip = re.sub(r"\s+", " ", stripped).replace("│", "|")
