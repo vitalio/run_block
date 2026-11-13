@@ -34,3 +34,13 @@ Split monolithic run_block into src/ Python modules and src/templates/*.md + src
 ### ✅ [DONE] F8: Extract context bundler and engineering rules catalog into standalone agents_bundle project — *99bc5e1*
 
 Move --start, .agents_bundle spec, --tree, and universal engineering rules/presets into a separate zero-dependency 'agents_bundle' CLI with zero hardcoded coupling to run_block (connected via user config and 'run_block --bundle').
+
+### ✅ [DONE] F7: Plugin architecture (pre/post hooks, LLM block analyzer, and headless stdout mode) — *412de9c*
+
+Add extensible plugin hooks for pre-execution block analysis (including LLM-based script review and auto-approval of safe blocks) and post-execution output handling (clipboard box vs raw stdout protocol mode).
+
+- Unify command classification ('[git]', '[write]', '[read]', '[exec]', '[python]') and safety risk scanning ('[git-push]', '[net-write]', '[git-destructive]', etc.) into the pre-execution analyzer plugin interface.
+
+### ✅ [DONE] F9: Audit run_block and todo_md architecture against unix-philosophy.md — *412de9c*
+
+Review CLI flags, stdin/stdout/stderr separation, and composability of run_block and todo_md against core/unix-philosophy.md.
