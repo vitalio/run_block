@@ -1,6 +1,6 @@
 # `run_block` — Project-Specific Agent Rules
 
-Universal workflow, language, Git, SemVer, Python CLI, and single-file build rules are loaded via `agents_rules` in `.agents_bundle`.
+Universal workflow, language, Git, SemVer, Python CLI, and single-file build rules are loaded via `.agents_bundle`.
 
 ## Release trigger & local reinstall
 
