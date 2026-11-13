@@ -12,7 +12,7 @@
                                         Opts: --session NAME, -p/--prompt TEXT, --force
   {prog} --init-start [--force]      Create a starter .run_block.start in the current directory
   {prog} --agents                    Print Markdown instructions for AI agents
-  {prog} --rules [TOPIC ...|--list]  Print reusable engineering rules (workflow, semver, python-cli, all)
+  {prog} --agents-rules [TOPIC ...]  Print reusable engineering rules (workflow, semver, python-cli, all, --list)
   {prog} --config                    Show active configuration ({config_path})
   {prog} --init-config [--force]     Create default config file at {config_path}
   {prog} --update [--force]          Self-update {prog} from GitHub (vitalio/run_block)
@@ -54,7 +54,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.9.1"
+VERSION = "0.10.0"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 START_FILE_NAME = ".run_block.start"
@@ -160,12 +160,6 @@ def get_setting(key: str, prog: str | None = None) -> tuple[str, str]:
         if "editor" in cfg and cfg["editor"]:
             return cfg["editor"].strip(), "config"
         return "auto", "default"
-    if key == "block_lang":
-        if os.environ.get("RUN_BLOCK_LANG"):
-            return os.environ["RUN_BLOCK_LANG"].strip(), "env"
-        if "block_lang" in cfg and cfg["block_lang"]:
-            return cfg["block_lang"].strip(), "config"
-        return "English", "default"
     if key == "safety_disable":
         if os.environ.get("RUN_BLOCK_SAFETY_DISABLE") is not None:
             return os.environ["RUN_BLOCK_SAFETY_DISABLE"].strip(), "env"
@@ -258,10 +252,6 @@ def default_config_template(prog: str | None = None) -> str:
         "#   auto -> uses $VISUAL, $EDITOR, nano, less, or vi",
         "editor = auto",
         "",
-        "# Language for commands, comments, and echo output inside blocks (chat prose uses user's language):",
-        "#   English (default), or 'none' to omit the language rule from --agents",
-        "block_lang = English",
-        "",
         "# Safety scanner customization:",
         "#   safety_disable = external-write, privilege-system",
         "#   safety_rule.<category> = <regex>  (adds a new category or overrides a built-in one)",
@@ -277,7 +267,7 @@ def cmd_show_config() -> int:
     exists_str = "exists" if cfg_path.is_file() else "not created yet (run --init-config)"
     sys.stdout.write(f"Config file: {cfg_path} ({exists_str})\n\n")
     sys.stdout.write("Active settings:\n")
-    for k in ("base_dir", "work_dir", "clipboard", "token_stats", "shell", "editor", "block_lang", "safety_disable", "safety_rules"):
+    for k in ("base_dir", "work_dir", "clipboard", "token_stats", "shell", "editor", "safety_disable", "safety_rules"):
         val, src = get_setting(k, prog=prog)
         if k in ("safety_disable", "safety_rules") and not val and src == "default":
             continue
@@ -309,9 +299,6 @@ def agents_markdown(prog: str | None = None) -> str:
     f3 = chr(96) * 3
     rb = "RUN_" + "BLOCK"
     rf = "RUN_" + "FIX"
-    lang, _ = get_setting("block_lang", prog=cmd)
-    lang_clean = lang.strip()
-    has_lang = bool(lang_clean and lang_clean.lower() not in ("none", "off", "false"))
     is_ps = _is_powershell()
     fence_lang = "powershell" if is_ps else "bash"
     shell_label = "pwsh" if is_ps else "bash"
@@ -377,16 +364,6 @@ def agents_markdown(prog: str | None = None) -> str:
         "   - If your script needs triple backticks or heredoc markers (e.g. when generating Markdown files or tests), build them dynamically:",
         f"     - **Python:** `F3 = chr(96) * 3`, `RB = 'RUN_' + 'BLOCK'`",
         "     - **Bash:** `F3=$(printf '\\140\\140\\140')`, `RB='RUN_'\"BLOCK\"`",
-    ]
-    if has_lang:
-        lines.append(
-            f"4. **LANGUAGE, PROGRESS & SECRETS:** Keep everything inside a block (commands, comments, `echo` output) in **{lang_clean}**; write chat prose outside blocks in the language the user writes in. Print periodic progress to `stderr` on long waits; never print secret files/tokens or enable `set -x` around credentials."
-        )
-    else:
-        lines.append(
-            "4. **PROGRESS & SECRETS:** Print periodic progress to `stderr` on long waits; never print secret files/tokens or enable `set -x` around credentials."
-        )
-    lines.extend([
         "",
         "### Session & Step Numbering (`<session>/<step>`)",
         "",
@@ -403,7 +380,7 @@ def agents_markdown(prog: str | None = None) -> str:
         *fix_block,
         "",
         "If the failed run already partially changed state and is not idempotent, use the next sequential step (`s1/2`) instead of `--fix`.",
-    ])
+    ]
     return "\n".join(lines)
 
 BUILTIN_RULES: dict[str, tuple[str, list[str]]] = {
@@ -412,13 +389,24 @@ BUILTIN_RULES: dict[str, tuple[str, list[str]]] = {
         [
             "### Workflow: Start → Investigate → Plan → Edit → Test → Commit → End",
             "",
-            "- **Start:** Uncommitted changes or in-flight work take precedence over new tasks — ask what to do first. Format dates in chat as `DD/MM/YYYY`, and in files/commits/logs as ISO `YYYY-MM-DD`.",
-            "- **Investigate:** Read code rather than guessing; say \"not known\" rather than filling gaps.",
-            "- **Plan:** Before non-trivial edits, state a high-level plan (target outcome, rules, and behavior — not a line-by-line diff dump) and write code once agreed.",
-            "- **Edit:** Write file edits in Python asserting each anchor occurs once (`assert text.count(old) == 1`) before writing. Avoid multiline triple-quoted strings when `\"\\n\".join([...])` is cleaner. Update `README.md` and `-h`/`--help` usage whenever CLI behavior or config options change.",
-            "- **Test & self-review diff:** Run project pre-commit checks and inspect `git diff HEAD` for dead code, regressions, and docs sync before committing (trivial 1–2 line edits may edit, test, and commit in one block).",
-            "- **Commit:** Never run `git push --force`, `git reset --hard`, or delete branches/tags without explicit user approval.",
-            "- **End:** On \"end session\" (or task completion), give a concise summary of completed work (with commit SHAs) and report any uncommitted/unpushed changes.",
+            "- **Start & task handoff:** Uncommitted work or an active pipeline comes before unrelated work — ask what to do first. Format dates to the user in chat as `{chat_date_fmt:DD/MM/YYYY}`; in files, commits, and logs use ISO `YYYY-MM-DD`. When starting a focused task chat, build a context bundle via `run_block --start -p \"Let's work on task <ID>...\" [file ...]`.",
+            "- **Progress & secrets:** Print periodic progress to `stderr` on long waits. Never print secret files/tokens or enable `set -x` around credentials; if a credential is ever pasted into chat, tell the user at once to rotate it.",
+            "- **Investigate & Plan:** Ask to see or read code rather than guessing it, and say \"not known\" rather than filling a gap. Always state a high-level plan in chat (target outcome, rules, and behavior — not a line-by-line code diff or replacement dump) and wait for user agreement before writing code.",
+            "- **Edit & pre-commit checks:** When editing files programmatically, assert that each search anchor occurs uniquely (`count == 1`) before writing, and avoid raw multiline strings that could break the chat Markdown fence. Every CLI tool must print usage on `-h`/`--help` and exit `0` doing nothing; update `README.md` and `-h`/`--help` in the same commit when changing behavior, flags, or config options. Before committing, always run syntax/linter checks on modified files and run the project's local test suite (offline unit tests) so untested or broken code is never committed.",
+            "- **Self-reviewed diff before commit:** A block that edits files does **not** commit. It marks new files with `git add -N`, runs syntax/linter checks and local tests, and prints `git status --porcelain` and the full `git diff HEAD`.",
+            "  - When the user pastes the output, **the model itself must audit the full diff** against all project rules (no leftover names/dead code, single responsibility and directory boundaries, updated `README.md` entries, `-h` usage). If any issue is found in the diff, fix it in the next block and print the new `git diff HEAD` — repeat until the diff is completely clean.",
+            "  - Once the model verifies that the printed diff is clean and tests pass, immediately give the `git commit` block in the same reply without asking the user to review or confirm the diff.",
+            "  - *Exception:* a trivial text-only change (1–2 lines, no code) may edit, show the diff, and commit in one block.",
+            "- **Commits & external changes:** Without explicit user approval each time: **no `git push --force`, no `git reset --hard`, no deleting a branch or tag, no rewriting a pushed commit.** Describe changes in external text (commit messages, MR descriptions, Slack, status updates) in words without internal task IDs. Changes outside Git (remote branches, MR descriptions, Slack) follow the same two-step rule: first a read-only preview block saving what it replaces, then the write block after agreement.",
+            "- **Ending a session:** When the user says \"end session\" or asks to stop: (1) give a concise session summary in chat (tasks completed, key changes, commit SHAs, and what remains); (2) report uncommitted changes, unpushed commits, and unmerged branches; (3) record durable decisions in `README.md` or `AGENTS.md`; (4) update `Resume` in `TODO.md` (`todo_md resume` and `todo_md check`) if used.",
+        ],
+    ),
+    "lang": (
+        "Language rules for chat prose vs blocks, code, docs, and commits ({lang:English})",
+        [
+            "### Language Policy",
+            "",
+            "- **Chat vs code & artifacts:** Write chat prose outside blocks in {chat_lang:the language the user writes in}; keep everything inside blocks (commands, comments, `echo` output) as well as documentation, code, files, and commit messages in **{lang:English}** (translate any quote before inserting it into a file).",
         ],
     ),
     "semver": (
@@ -427,10 +415,10 @@ BUILTIN_RULES: dict[str, tuple[str, list[str]]] = {
             "### Versioning & Releases (SemVer)",
             "",
             "- **Bump rules:**",
-            "  - `PATCH` (`0.Y.Z+1`) — bugfixes, UI/box tweaks, and `--agents`/`--rules`/`--help`/docs updates.",
+            "  - `PATCH` (`0.Y.Z+1`) — bugfixes, UI/box tweaks, and `--agents`/`--agents-rules`/`--help`/docs updates.",
             "  - `MINOR` (`0.Y+1.0`) — new CLI commands/flags or config options.",
             "  - `MAJOR` (`X+1.0.0`) — breaking changes or only when explicitly requested.",
-            "- **Release steps:** Keep `VERSION` and in-code `VERSION = \"...\"` in sync, reinstall locally if applicable, commit, push to `origin main`, and push an annotated release tag (`git tag -a vX.Y.Z -m \"Release vX.Y.Z\" && git push origin vX.Y.Z`).",
+            "- **Release steps:** Keep `VERSION` and in-code `VERSION = \"...\"` in sync, reinstall locally if applicable, commit, push to `origin {main_branch:main}`, and push an annotated release tag (`git tag -a vX.Y.Z -m \"Release vX.Y.Z\" && git push origin vX.Y.Z`).",
         ],
     ),
     "python-cli": (
@@ -438,8 +426,9 @@ BUILTIN_RULES: dict[str, tuple[str, list[str]]] = {
         [
             "### Python CLI Engineering Invariants",
             "",
-            "- **Zero external dependencies:** Use only the Python 3 standard library (`from __future__ import annotations` at top of Python files for macOS system Python 3.9 compatibility).",
+            "- **Zero external dependencies:** Use only the Python 3 standard library (`from __future__ import annotations` at top of Python files for Python {py_min:3.9}+ compatibility).",
             "- **Single responsibility & clean CLI:** Every flag/command must be documented in `-h`/`--help` (which exits `0` doing nothing) and covered by unit tests.",
+            "- **Python & shell pre-commit checks:** Syntax-check shell scripts with `bash -n` and `shellcheck -S warning`, verify Python syntax with `ast.parse`, and run `tests/test_*.py` unit tests before committing.",
         ],
     ),
 }
@@ -466,12 +455,33 @@ def _discover_user_rules() -> dict[str, Path]:
     return out
 
 
-def rules_markdown(topics: list[str] | None = None) -> str:
+RULE_VAR_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*):([^{}]*)\}")
+
+
+def _render_rule_vars(text: str, vars_map: dict[str, str]) -> str:
+    return RULE_VAR_RE.sub(lambda m: vars_map.get(m.group(1), m.group(2)), text)
+
+
+def rules_markdown(args: list[str] | None = None) -> str:
     prog = prog_name()
     user_rules = _discover_user_rules()
-    raw_topics = [t.strip().lower() for t in (topics or []) if t.strip()]
+    raw_topics: list[str] = []
+    vars_map: dict[str, str] = {}
+    for item in args or []:
+        s = item.strip()
+        if not s:
+            continue
+        if "=" in s:
+            k, v = s.split("=", 1)
+            k_clean = k.strip()
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k_clean):
+                raise SystemExit(f"{prog}: invalid rule variable name {k_clean!r} in {s!r}")
+            vars_map[k_clean] = v.strip()
+        else:
+            raw_topics.append(s.lower())
+
     if not raw_topics:
-        raw_topics = ["workflow"]
+        raw_topics = ["workflow", "lang"]
 
     expanded: list[str] = []
     for t in raw_topics:
@@ -491,9 +501,9 @@ def rules_markdown(topics: list[str] | None = None) -> str:
         if t in user_rules:
             body = user_rules[t].read_text(encoding="utf-8", errors="replace").strip()
             if body:
-                blocks.append(body)
+                blocks.append(_render_rule_vars(body, vars_map))
         elif t in BUILTIN_RULES:
-            blocks.append("\n".join(BUILTIN_RULES[t][1]))
+            blocks.append(_render_rule_vars("\n".join(BUILTIN_RULES[t][1]), vars_map))
         else:
             avail = sorted(set(BUILTIN_RULES.keys()) | set(user_rules.keys())) + ["all"]
             raise SystemExit(
@@ -508,7 +518,7 @@ def cmd_rules(argv: list[str]) -> int:
     prog = prog_name()
     if any(a in ("--list", "-l") for a in argv):
         if len(argv) > 1:
-            raise SystemExit(f"{prog}: usage: {prog} --rules [TOPIC ... | all | --list]")
+            raise SystemExit(f"{prog}: usage: {prog} --agents-rules [TOPIC ... | all | --list]")
         user_rules = _discover_user_rules()
         rdir = rules_dir_path()
         sys.stdout.write("Built-in rule topics:\n")
@@ -526,7 +536,7 @@ def cmd_rules(argv: list[str]) -> int:
         return 0
     for a in argv:
         if a.startswith("-"):
-            raise SystemExit(f"{prog}: usage: {prog} --rules [TOPIC ... | all | --list]")
+            raise SystemExit(f"{prog}: usage: {prog} --agents-rules [TOPIC ... | all | --list]")
     sys.stdout.write(rules_markdown(argv) + "\n")
     return 0
 
@@ -1971,7 +1981,7 @@ def default_start_template(prog: str | None = None) -> str:
         "# Lines starting with '$ ' (or '! ') are shell commands executed in the project directory.",
         "",
         f"$ {cmd} --agents",
-        f"$ {cmd} --rules",
+        f"$ {cmd} --agents-rules",
         "",
         "AGENTS.md",
         "",
@@ -2038,10 +2048,9 @@ def _run_start_command(cmd_str: str, cwd: Path) -> tuple[int, str]:
     # If the command invokes '<prog> --agents' directly, call our own agents_markdown() in-process
     if re.fullmatch(rf"{re.escape(prog)}\s+--agents(?:-md)?", cmd_str) or re.fullmatch(r"run_block\s+--agents(?:-md)?", cmd_str):
         return 0, agents_markdown(prog)
-    if re.match(rf"^(?:{re.escape(prog)}|run_block)\s+--rules(?:\s+.*)?$", cmd_str):
+    if re.match(rf"^(?:{re.escape(prog)}|run_block)\s+--(?:agents-)?rules(?:\s+.*)?$", cmd_str):
         try:
             parts = shlex.split(cmd_str)[2:]
-            buf = []
             if any(a in ("--list", "-l") for a in parts):
                 pass
             else:
@@ -2091,7 +2100,7 @@ def build_start_bundle(
         spec_source = "built-in defaults"
         entries = [
             ("cmd", f"{prog} --agents"),
-            ("cmd", f"{prog} --rules"),
+            ("cmd", f"{prog} --agents-rules"),
         ]
         if (spec_dir / "AGENTS.md").is_file():
             entries.append(("file", "AGENTS.md"))
@@ -2660,7 +2669,7 @@ def main(argv: list[str] | None = None) -> int:
     if "--agents" in args or "--agents-md" in args:
         sys.stdout.write(agents_markdown(prog) + "\n")
         return 0
-    if args and args[0] == "--rules":
+    if args and args[0] in ("--agents-rules", "--rules"):
         return cmd_rules(args[1:])
     if not args:
         if not sys.stdin.isatty():
@@ -2712,7 +2721,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if len(args) != 1 or args[0].startswith("-"):
         raise SystemExit(
-            f"{prog}: usage: {prog} [<session>/<step>] (or --fix / --retry / --list / --show / --clean / --tree / --start / --init-start / --config / --agents / --rules / --update / --version / --help)"
+            f"{prog}: usage: {prog} [<session>/<step>] (or --fix / --retry / --list / --show / --clean / --tree / --start / --init-start / --config / --agents / --agents-rules / --update / --version / --help)"
         )
     return cmd_normal(args[0], sys.stdin.read())
 

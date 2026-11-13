@@ -1,6 +1,6 @@
 # `run_block` — Project-Specific Agent Rules
 
-Universal workflow, SemVer, and Python CLI rules are loaded via `$ run_block --rules workflow semver python-cli`.
+Universal workflow, SemVer, and Python CLI rules are loaded via `$ run_block --agents-rules workflow lang semver python-cli`.
 
 ## Pre-commit checks
 

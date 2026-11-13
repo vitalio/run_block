@@ -40,7 +40,6 @@ class TestRunBlock(unittest.TestCase):
                 "RUN_BLOCK_CWD",
                 "IN_RUN_BLOCK",
                 "RUN_BLOCK_UPDATE_URL",
-                "RUN_BLOCK_LANG",
                 "RUN_BLOCK_SHELL",
                 "RUN_BLOCK_SAFETY_DISABLE",
                 "RUN_BLOCK_SAFETY_RULES",
@@ -371,8 +370,8 @@ class TestRunBlock(unittest.TestCase):
         bundle = (self.tmp / "sub_sessions/s1/0.txt").read_text(encoding="utf-8")
         self.assertNotIn("# Subproject rules", bundle)
         self.assertIn("===== $ run_block --agents =====", bundle)
-        self.assertIn("===== $ run_block --rules =====", bundle)
-        self.assertIn("## Agent Engineering Rules (workflow)", bundle)
+        self.assertIn("===== $ run_block --agents-rules =====", bundle)
+        self.assertIn("## Agent Engineering Rules (workflow, lang)", bundle)
 
 
     def test_info_and_prompt_boxes_and_skipped_step_confirmation(self):
@@ -508,10 +507,16 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("deep/ (25 files, 75L)", str(res["full"]))
 
     def test_rules_builtin_and_custom_and_start_bundle(self):
-        # Default topic (workflow)
+        # Default topics (workflow, lang) and variable substitution
         md_def = self.mod.rules_markdown()
-        self.assertIn("## Agent Engineering Rules (workflow)", md_def)
+        self.assertIn("## Agent Engineering Rules (workflow, lang)", md_def)
         self.assertIn("Workflow: Start → Investigate → Plan → Edit → Test → Commit → End", md_def)
+        self.assertIn("### Language Policy", md_def)
+        self.assertIn("in **English**", md_def)
+
+        md_var = self.mod.rules_markdown(["lang", "python-cli", "lang=Russian", "py_min=3.11"])
+        self.assertIn("in **Russian**", md_var)
+        self.assertIn("Python 3.11+ compatibility", md_var)
 
         # Multiple topics + custom rule in RUN_BLOCK_RULES_DIR
         rdir = self.tmp / "custom_rules"
@@ -520,7 +525,7 @@ class TestRunBlock(unittest.TestCase):
         os.environ["RUN_BLOCK_RULES_DIR"] = str(rdir)
         try:
             md_all = self.mod.rules_markdown(["all"])
-            self.assertIn("workflow, semver, python-cli, security", md_all)
+            self.assertIn("workflow, lang, semver, python-cli, security", md_all)
             self.assertIn("### Versioning & Releases (SemVer)", md_all)
             self.assertIn("### Python CLI Engineering Invariants", md_all)
             self.assertIn("### Custom Security Rule", md_all)
@@ -534,9 +539,9 @@ class TestRunBlock(unittest.TestCase):
 
             proj = self.tmp / "rules_proj"
             proj.mkdir()
-            (proj / ".run_block.start").write_text("$ run_block --rules workflow security\n", encoding="utf-8")
+            (proj / ".run_block.start").write_text("$ run_block --agents-rules workflow security\n", encoding="utf-8")
             res = self.mod.build_start_bundle("s1", work_dir=proj)
-            self.assertIn("===== $ run_block --rules workflow security =====", str(res["full"]))
+            self.assertIn("===== $ run_block --agents-rules workflow security =====", str(res["full"]))
             self.assertIn("### Custom Security Rule", str(res["full"]))
         finally:
             os.environ.pop("RUN_BLOCK_RULES_DIR", None)

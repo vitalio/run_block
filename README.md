@@ -31,7 +31,7 @@ Plain lines are UTF-8 file paths; lines starting with `$ ` are shell commands:
 
 ```text
 $ run_block --agents
-$ run_block --rules workflow semver python-cli
+$ run_block --agents-rules workflow lang semver python-cli
 
 AGENTS.md
 
@@ -92,7 +92,6 @@ Run `run_block --init-config` to create `~/.config/run_block/config` or `run_blo
 | `token_stats` | `RUN_BLOCK_TOKEN_STATS` | `true` | Show byte size and Claude/GPT/Gemini token counts (`true` / `false`) |
 | `shell` | `RUN_BLOCK_SHELL` | `bash` | Shell binary (`bash`, `sh`, or `pwsh`/`powershell` on Windows) |
 | `editor` | `RUN_BLOCK_EDITOR` | `auto` | Terminal editor/viewer for `v` in `BLOCK PLAN` (`auto`, `nano`, `vim`, `less`) |
-| `block_lang` | `RUN_BLOCK_LANG` | `English` | Language required inside blocks in `--agents` (`English`, or `none` to omit) |
 | `safety_disable` | `RUN_BLOCK_SAFETY_DISABLE` | *(none)* | Comma-separated built-in risk categories to disable |
 | `safety_rule.<cat>` | `RUN_BLOCK_SAFETY_RULES` | *(none)* | Custom regex rule (or override) for risk category `<cat>` |
 
@@ -110,7 +109,7 @@ Run `run_block --init-config` to create `~/.config/run_block/config` or `run_blo
 | `run_block --start [options] [FILE ..]` | Build `<session>/0.txt` context bundle from `.run_block.start` |
 | `run_block --init-start [--force]` | Create a starter `.run_block.start` in the current directory |
 | `run_block --agents` | Print Markdown instructions for AI agents |
-| `run_block --rules [TOPIC ... \| --list]` | Print reusable engineering rules (`workflow`, `semver`, `python-cli`, `all`) |
+| `run_block --agents-rules [TOPIC ... \| --list]` | Print reusable engineering rules (`workflow`, `lang`, `semver`, `python-cli`, `all`, `key=val`) |
 | `run_block --config` | Show active configuration and sources |
 | `run_block --init-config [--force]` | Create default `~/.config/run_block/config` |
 | `run_block --update [--force]` | Self-update `run_block` from GitHub (`vitalio/run_block`) |
