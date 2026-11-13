@@ -389,6 +389,7 @@ def gpt_encoder():
 def count_tokens(data: bytes) -> dict[str, int | bool]:
     text = data.decode("utf-8", "replace")
     chars = len(text)
+    lines = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
     enc = gpt_encoder()
     if enc is not None:
         gpt = len(enc.encode(text, disallowed_special=()))
@@ -396,6 +397,7 @@ def count_tokens(data: bytes) -> dict[str, int | bool]:
         gpt = math.ceil(chars / 4)
     return {
         "bytes": len(data),
+        "lines": lines,
         "claude": math.ceil(chars / 3.5),
         "gpt": gpt,
         "gpt_exact": enc is not None,
@@ -403,11 +405,27 @@ def count_tokens(data: bytes) -> dict[str, int | bool]:
     }
 
 
+def _human_size(num_bytes: int) -> str:
+    if num_bytes < 1024:
+        return f"{num_bytes} B"
+    return f"{num_bytes / 1024:.1f} KB"
+
+
+def _human_tok(n: int) -> str:
+    if n < 1000:
+        return f"{n}"
+    return f"{n / 1000:.1f}k"
+
+
 def format_stats(data: bytes) -> str:
     s = count_tokens(data)
-    mark = "" if s["gpt_exact"] else "~"
-    size, claude, gpt, gemini = s["bytes"], s["claude"], s["gpt"], s["gemini"]
-    return f"Size: {size:,} bytes | Tokens: Claude ~{claude:,} | GPT {mark}{gpt:,} | Gemini ~{gemini:,}"
+    lines = int(s["lines"])
+    sz = _human_size(int(s["bytes"]))
+    lo = min(int(s["gpt"]), int(s["claude"]))
+    hi = max(int(s["gpt"]), int(s["claude"]))
+    tok_str = f"~{_human_tok(lo)}–{_human_tok(hi)} tokens" if lo != hi else f"~{_human_tok(lo)} tokens"
+    line_lbl = f"{lines} line{'s' if lines != 1 else ''}"
+    return f"{line_lbl} · {sz} · {tok_str}"
 
 
 def stats_line(path: Path) -> str | None:
@@ -426,7 +444,7 @@ CR_LINE_RE = re.compile(r"[^\n]*\r(?!\n)")
 
 def resolve_clipboard_target(out_path: Path, full_output: str) -> Path:
     matches = re.findall(
-        r"^\[[A-Za-z0-9._-]+\] Attach: (\S+)\s*$",
+        r"^(?:\[[A-Za-z0-9._-]+\] Attach:|│?\s*Bundle:)\s*(\S+?)\s*(?:│)?$",
         full_output,
         flags=re.MULTILINE,
     )
@@ -477,35 +495,48 @@ def pad_box_line(text: str, inner_width: int) -> str:
 
 
 def format_clipboard_box(
-    label: str, out_path: Path, ok: bool = True, rc: int | None = None, stats: str | None = None
+    label: str,
+    out_path: Path,
+    ok: bool = True,
+    rc: int | None = None,
+    stats: str | None = None,
+    title_kind: str = "END",
+    extra_lines: list[str] | None = None,
 ) -> tuple[str, int, int]:
+    details: list[str] = []
     if rc is not None and rc != 0:
-        state = f"END (exit {rc})"
-    else:
-        state = "END"
-    title = f" {label} · {state} "
-    line2 = f"-> Press Enter to copy {out_path} to clipboard (v to view, Esc to skip)"
+        details.append(f"exit {rc}")
+    if stats:
+        details.append(stats)
+    detail_str = f" ({' · '.join(details)})" if details else ""
+    title = f" {label} · {title_kind}{detail_str} "
+    body_lines = list(extra_lines) if extra_lines else [f"Output: {out_path}"]
+    prompt_line = "-> Copy to clipboard? [Enter/v(iew)/Esc]:"
     copied_line = f"✓ Copied {out_path} to clipboard."
-    stats_width = display_width(stats) if stats else 0
     inner_width = max(
         display_width(title),
-        display_width(line2),
+        display_width(prompt_line),
         display_width(copied_line),
-        stats_width,
+        *(display_width(b) for b in body_lines),
     )
     dashes = max(1, inner_width + 2 - display_width(title) - 1)
     top = f"┌─{title}{'─' * dashes}┐"
     bottom = f"└─{'─' * inner_width}─┘"
-    rows = [pad_box_line(line2, inner_width)]
-    if stats:
-        rows.insert(0, pad_box_line(stats, inner_width))
+    rows = [pad_box_line(b, inner_width) for b in body_lines]
+    rows.append(pad_box_line("", inner_width))
+    rows.append(pad_box_line(prompt_line, inner_width))
     box = "\n".join([top, *rows, bottom])
-    cursor_col_offset = 2 + display_width(line2)
+    cursor_col_offset = 2 + display_width(prompt_line)
     return box, inner_width, cursor_col_offset
 
 
 def offer_clipboard_copy(
-    label: str, out_path: Path, ok: bool = True, rc: int | None = None
+    label: str,
+    out_path: Path,
+    ok: bool = True,
+    rc: int | None = None,
+    title_kind: str = "END",
+    extra_lines: list[str] | None = None,
 ) -> None:
     if in_run_block():
         return
@@ -528,10 +559,10 @@ def offer_clipboard_copy(
         sys.stdout.flush()
         return
     box, inner_width, cursor_offset = format_clipboard_box(
-        label, out_path, ok=ok, rc=rc, stats=stats_line(out_path)
+        label, out_path, ok=ok, rc=rc, stats=stats_line(out_path), title_kind=title_kind, extra_lines=extra_lines
     )
     bottom = f"└─{'─' * inner_width}─┘"
-    line2 = f"-> Press Enter to copy {out_path} to clipboard (v to view, Esc to skip)"
+    line2 = "-> Copy to clipboard? [Enter/v(iew)/Esc]:"
     try:
         tty_w, tty_r = open_tty()
         with tty_w, tty_r:

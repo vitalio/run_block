@@ -133,9 +133,9 @@ def run_script(
         check=False,
     )
     if chk.returncode != 0:
-        start_line = f"[{label}] START (script: {script_path})\n\n"
+        start_line = f"[{label}] START\n\n"
         msg = chk.stdout or "syntax check failed\n"
-        end_line = f"[{label}] END (syntax error, exit {chk.returncode}) — output: {out_path}\n"
+        end_line = f"[{label}] END (syntax error, exit {chk.returncode})\n"
         full_output = start_line + msg + end_line
         if headless:
             sys.stdout.write(full_output)
@@ -161,7 +161,7 @@ def run_script(
         )
     aborted_marker.unlink(missing_ok=True)
 
-    start_line = f"[{label}] START (script: {script_path})\n"
+    start_line = f"[{label}] START\n"
     log_chunks: list[str] = [start_line]
     for h in header_lines or []:
         log_chunks.append(h)
@@ -250,17 +250,21 @@ def run_script(
         log_chunks.append("\n")
         sys.stdout.write("\n")
     exit_str = f" (exit {rc})" if rc != 0 else ""
-    end_line = f"\n[{label}] END{exit_str} — output: {out_path}\n"
+    end_line = f"\n[{label}] END{exit_str}\n"
     log_chunks.append(end_line)
-    if headless:
-        sys.stdout.write(end_line)
-    elif in_run_block() or not sys.stdout.isatty() or clipboard_mode() != "prompt":
-        sys.stdout.write("\n" + format_info_box(f"{label} · END{exit_str}", [f"Output: {out_path}"]) + "\n")
-    sys.stdout.flush()
     full_output = CR_LINE_RE.sub("", ANSI_RE.sub("", "".join(log_chunks))).replace("\r\n", "\n")
     write_private(out_path, full_output)
+    clip_target = resolve_clipboard_target(out_path, full_output)
+    if headless:
+        sys.stdout.write(end_line)
+        sys.stdout.flush()
+    elif in_run_block() or not sys.stdout.isatty() or clipboard_mode() != "prompt" or clipboard_command(clip_target) is None:
+        st = stats_line(clip_target)
+        hdr_det = (" · ".join(x for x in (f"exit {rc}" if rc != 0 else "", st or "") if x))
+        hdr = f"{label} · END ({hdr_det})" if hdr_det else f"{label} · END"
+        sys.stdout.write("\n" + format_info_box(hdr, [f"Output: {clip_target}"]) + "\n")
+        sys.stdout.flush()
     if not headless:
-        clip_target = resolve_clipboard_target(out_path, full_output)
         offer_clipboard_copy(label, clip_target, ok=(rc == 0), rc=rc)
     return rc
 

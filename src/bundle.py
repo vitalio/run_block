@@ -68,9 +68,20 @@ def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
     bundle_path = sdir / "0.txt"
     res = format_start_bundle(session_name=session_name, stdin_body=stdin_text)
     write_private(bundle_path, str(res["full"]), overwrite=True)
-    hdr_lines = [*list(res["console_lines"]), f"Bundle: {bundle_path}"]
-    sys.stdout.write(format_info_box(f"{session_name}/0 · START BUNDLE", hdr_lines) + "\n")
-    sys.stdout.flush()
-    if not in_run_block():
-        offer_clipboard_copy(f"{session_name}/0", bundle_path, ok=True, rc=0)
+    wdir = get_work_dir().resolve()
+    body_lines = [
+        f"Next block: {session_name}/1",
+        f"Workdir:    {wdir}",
+        f"Bundle:     {bundle_path}",
+    ]
+    label0 = f"{session_name}/0"
+    if not in_run_block() and sys.stdout.isatty() and clipboard_mode() == "prompt" and clipboard_command(bundle_path) is not None:
+        offer_clipboard_copy(label0, bundle_path, ok=True, rc=0, title_kind="START BUNDLE", extra_lines=body_lines)
+    else:
+        st = stats_line(bundle_path)
+        hdr = f"{label0} · START BUNDLE ({st})" if st else f"{label0} · START BUNDLE"
+        sys.stdout.write(format_info_box(hdr, body_lines) + "\n")
+        sys.stdout.flush()
+        if not in_run_block():
+            offer_clipboard_copy(label0, bundle_path, ok=True, rc=0, title_kind="START BUNDLE", extra_lines=body_lines)
     return 0

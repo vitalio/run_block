@@ -112,9 +112,9 @@ class TestRunBlock(unittest.TestCase):
             check=False,
         )
         self.assertEqual(r_headless.returncode, 0)
-        self.assertIn("[s1/1] START (script:", r_headless.stdout)
+        self.assertIn("[s1/1] START\n", r_headless.stdout)
         self.assertIn("headless_ok", r_headless.stdout)
-        self.assertIn("[s1/1] END — output:", r_headless.stdout)
+        self.assertIn("[s1/1] END\n", r_headless.stdout)
         self.assertNotIn("┌─", r_headless.stdout)
 
         env_reject = {**os.environ, "RUN_BLOCK_APPROVE_CMD": "echo 'Blocked by LLM policy' && exit 1"}
@@ -201,7 +201,8 @@ class TestRunBlock(unittest.TestCase):
             self.assertEqual(rc_skip, 2)
         out1 = (self.tmp / "s1/1.txt").read_text(encoding="utf-8")
         self.assertIn("hello_world in_rb=1", out1)
-        self.assertIn("[s1/1] END — output:", out1)
+        self.assertIn("[s1/1] START\n", out1)
+        self.assertIn("[s1/1] END\n", out1)
         self.assertIn("┌─ s1/1 · END ", buf.getvalue())
         self.assertIn("┌─ s1/3 · NOT RUN ", buf.getvalue())
 
@@ -234,11 +235,13 @@ class TestRunBlock(unittest.TestCase):
         f = self.tmp / "x.txt"
         f.write_text("hello\n", encoding="utf-8")
         s = self.mod.stats_line(f)
-        self.assertIn("Size: 6 bytes", s)
-        self.assertIn("Claude", s)
+        self.assertIn("1 line · 6 B · ~2 tokens", s)
         box, _, _ = self.mod.format_clipboard_box("s2/1", f, stats=s)
+        self.assertIn("s2/1 · END (1 line · 6 B · ~2 tokens)", box)
+        self.assertIn(f"Output: {f}", box)
+        self.assertIn("-> Copy to clipboard? [Enter/v(iew)/Esc]:", box)
         lines = box.splitlines()
-        self.assertEqual(len(lines), 4)
+        self.assertEqual(len(lines), 5)
         self.assertEqual(len({self.mod.display_width(l) for l in lines}), 1)
 
     def test_self_update_and_check_update(self):
@@ -321,7 +324,7 @@ class TestRunBlock(unittest.TestCase):
             check=False,
         )
         self.assertEqual(r_pipe.returncode, 0, r_pipe.stderr)
-        self.assertIn("Session: s1", r_pipe.stdout)
+        self.assertIn("s1/0 · START BUNDLE", r_pipe.stdout)
         self.assertIn("Next block: s1/1", r_pipe.stdout)
         bundle1 = (self.tmp / "sessions/s1/0.txt").read_text(encoding="utf-8")
         self.assertIn("Session: s1\nNext block: s1/1\nWorkdir:", bundle1)
@@ -351,7 +354,7 @@ class TestRunBlock(unittest.TestCase):
             check=False,
         )
         self.assertEqual(r_start.returncode, 0, r_start.stderr)
-        self.assertIn("Session: s2", r_start.stdout)
+        self.assertIn("s2/0 · START BUNDLE", r_start.stdout)
 
         r_show0 = subprocess.run(
             [str(SCRIPT), "--show", "s2/0"],
