@@ -1,7 +1,4 @@
 # .run_block.start — session context bundle specification for 'run_block --start'
-# Plain lines are file paths (read directly as UTF-8 relative to the project root).
-# Lines starting with '$ ' (or '! ') are shell commands executed in the project directory.
-
 $ run_block --agents
 
 AGENTS.md
