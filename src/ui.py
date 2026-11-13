@@ -77,6 +77,7 @@ def format_safety_box(
     findings: list[dict[str, object]],
     default_yes: bool = False,
     summary: dict[str, object] | None = None,
+    note: str = "",
 ) -> tuple[str, int, int]:
     meta_str = str(summary.get('meta', '')) if summary else ''
     if findings:
@@ -123,6 +124,16 @@ def format_safety_box(
             w_indent = ""
         warn_items = [(str(f["category"]), str(f["snippet"])) for f in findings]
         content_lines.extend(_wrap_labeled_items(warn_items, max_row_len, indent=w_indent))
+
+    if note.strip():
+        if content_lines:
+            content_lines.append("")
+        content_lines.append("Analyzer:")
+        for nline in note.strip().splitlines():
+            content_lines.extend(
+                textwrap.wrap(nline, width=max_row_len - 2, initial_indent="  ", subsequent_indent="  ")
+                or [f"  {nline}"]
+            )
 
     inner_width = max(
         display_width(title),
@@ -295,18 +306,35 @@ def confirm_execution(
     script_text: str,
     summary: dict[str, object] | None = None,
     script_path: Path | None = None,
-) -> bool:
+    auto_yes: bool = False,
+) -> tuple[bool, str]:
     if in_run_block():
-        return True
+        return True, ""
     findings = scan_script_risks(script_text)
-    if not sys.stdout.isatty() or no_clipboard():
+    note = ""
+    approve_cmd, _ = get_setting("approve_cmd")
+    if approve_cmd:
+        wdir = Path(str(summary.get("work_dir"))) if summary and summary.get("work_dir") else get_work_dir()
+        plan_obj = analyze_script(script_text, work_dir=wdir, label=label, check_syntax=False)
+        decision, note = run_approve_cmd(approve_cmd, label, script_text, plan_obj, script_path=script_path)
+        if decision == "reject":
+            return False, (note or "rejected by RUN_BLOCK_APPROVE_CMD")
+        if decision == "approve":
+            if findings and (auto_yes or not sys.stdout.isatty() or no_clipboard()):
+                for f in findings:
+                    sys.stdout.write(f"[{label}] safety warning [{f['category']}]: {f['snippet']}\n")
+                sys.stdout.flush()
+            return True, note
+    if auto_yes or not sys.stdout.isatty() or no_clipboard():
         if findings:
             for f in findings:
                 sys.stdout.write(f"[{label}] safety warning [{f['category']}]: {f['snippet']}\n")
             sys.stdout.flush()
-        return True
+        return True, note
     default_yes = (len(findings) == 0)
-    box, inner_width, cursor_offset = format_safety_box(label, findings, default_yes=default_yes, summary=summary)
+    box, inner_width, cursor_offset = format_safety_box(
+        label, findings, default_yes=default_yes, summary=summary, note=note
+    )
     bottom = f"└─{'─' * inner_width}─┘"
     prompt_suffix = "[Y/n/v(iew)]:" if default_yes else "[y/n/v(iew)]:"
     prompt_line = f"-> Execute this block? {prompt_suffix}"
@@ -333,9 +361,9 @@ def confirm_execution(
             status_line = "✓ Approved by user." if approved else f"✗ Aborted (--retry {label})"
             tty_w.write(f"\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
             tty_w.flush()
-            return approved
+            return approved, ("" if approved else f"aborted by user (re-run with: {prog_name()} --retry {label})")
     except OSError:
-        return True
+        return True, note
 
 
 # --- Built-in token and byte statistics ---

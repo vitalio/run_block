@@ -23,6 +23,7 @@ git status -sb
    - If you include any other code blocks earlier in your explanation, make sure their closing fences are properly closed before the `{cmd:run_block}` block starts.
 3. **NO INNER TRIPLE BACKTICKS OR HEREDOC DELIMITERS (NEVER BREAK THE FENCE):**
    - **Never** write three consecutive backticks anywhere inside the script body (not in strings, comments, or nested heredocs) — that prematurely closes the Markdown code block in the chat UI and truncates the script!
+   - **Never rewrite entire Markdown files (`README.md`, etc.) as a single literal:** Use targeted `text.replace(old, new, 1)` on the changed section so existing fenced code blocks are never emitted inside the script.
    - **Never** write literal `'@` at column 0 inside the script body — PowerShell will terminate the outer here-string early!
    - If your script needs triple backticks or heredoc markers (e.g. when generating Markdown files or tests), build them dynamically:
      - **Python:** `F3 = chr(96) * 3`, `RB = 'RUN_' + 'BLOCK'`

@@ -66,35 +66,36 @@ text = text.replace(old, new, 1)
 RUN_FIX
 ```
 
-## Configuration (`~/.config/run_block/config`)
+## Environment Variables
 
-Run `run_block --init-config` to create `~/.config/run_block/config` or `run_block --config` to inspect active settings:
+`run_block` works out of the box with zero configuration files and honors standard environment variables:
 
-| Config Key | Environment Variable | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `base_dir` | `RUN_BLOCK_DIR` | `/tmp/run_block` | Directory where session `<step>.sh` and `<step>.txt` files are stored |
-| `work_dir` | `RUN_BLOCK_CWD` | `auto` | `auto` (Git root or `$PWD`), `cwd` (always `$PWD`), or explicit path |
-| `clipboard` | `RUN_BLOCK_CLIPBOARD` | `prompt` | `prompt` (`Enter`/`Esc` box), `auto` (copy automatically), `never` |
-| `token_stats` | `RUN_BLOCK_TOKEN_STATS` | `true` | Show byte size and Claude/GPT/Gemini token counts (`true` / `false`) |
-| `shell` | `RUN_BLOCK_SHELL` | `bash` | Shell binary (`bash`, `sh`, or `pwsh`/`powershell` on Windows) |
-| `editor` | `RUN_BLOCK_EDITOR` | `auto` | Terminal editor/viewer for `v` in `BLOCK PLAN` (`auto`, `nano`, `vim`, `less`) |
-| `safety_disable` | `RUN_BLOCK_SAFETY_DISABLE` | *(none)* | Comma-separated built-in risk categories to disable |
-| `safety_rule.<cat>` | `RUN_BLOCK_SAFETY_RULES` | *(none)* | Custom regex rule (or override) for risk category `<cat>` |
+| Environment Variable | Default | Description |
+| :--- | :--- | :--- |
+| `RUN_BLOCK_DIR` | `/tmp/run_block` | Directory where session `<step>.sh` and `<step>.txt` files are stored |
+| `RUN_BLOCK_CWD` | `auto` | `auto` (Git root or `$PWD`), `cwd` (always `$PWD`), or explicit path |
+| `RUN_BLOCK_CLIPBOARD` | `prompt` | `prompt` (`Enter`/`Esc` box), `auto` (copy automatically), `never` |
+| `RUN_BLOCK_HEADLESS` | `0` | Set to `1` (or pass `-y`/`--yes`) for raw stdout protocol without TUI boxes |
+| `RUN_BLOCK_APPROVE_CMD` | *(none)* | External/LLM validator command receiving `--plan` JSON on `stdin` (`0`=approve, `2`=prompt user with stdout note, other=reject) |
+| `RUN_BLOCK_TOKEN_STATS` | `true` | Show byte size and Claude/GPT/Gemini token counts (`true` / `false`) |
+| `RUN_BLOCK_SHELL` | `bash` | Shell binary (`bash`, `sh`, or `pwsh`/`powershell` on Windows) |
+| `VISUAL` / `EDITOR` | `vim`/`less`/`nano` | Terminal editor/viewer for `v` in `BLOCK PLAN` |
+| `RUN_BLOCK_SAFETY_DISABLE` | *(none)* | Comma-separated built-in risk categories to disable |
+| `RUN_BLOCK_SAFETY_RULES` | *(none)* | Semicolon-separated `<cat>=<regex>` rules |
 
 ## CLI Reference
 
 | Command | Description |
 | :--- | :--- |
-| `run_block [<session>/<step>]` | Run a block from `stdin` (omit ref on first block to auto-init `<session>/1`) |
-| `run_block --fix <session>/<target>` | Patch `<target>` script via Python on `stdin` and run as `<target>_N` |
-| `run_block --retry [session/step]` | Re-run the last (or specified) block |
+| `run_block [-y] [<session>/<step>]` | Run a block from `stdin` (`-y` for non-interactive headless mode) |
+| `run_block --plan` | Analyze script from `stdin` and print JSON execution and safety plan |
+| `run_block --fix [-y] <session>/<target>` | Patch `<target>` script via Python on `stdin` and run as `<target>_N` |
+| `run_block --retry [-y] [session/step]` | Re-run the last (or specified) block |
 | `run_block --list`, `-l [session]` | List sessions and blocks with their status and summary |
 | `run_block --show [session/step]` | Show saved script and output of a block (or `<session>/0` bundle) |
 | `run_block --clean [--keep N \| --all]` | Prune old session directories in `/tmp/run_block` (default: `--keep 5`) |
 | `run_block --start [--session NAME]` | Read context bundle from `stdin` into `<session>/0.txt` |
 | `run_block --agents` | Print Markdown instructions for AI agents |
-| `run_block --config` | Show active configuration and sources |
-| `run_block --init-config [--force]` | Create default `~/.config/run_block/config` |
 | `run_block --update [--force]` | Self-update `run_block` from GitHub (`vitalio/run_block`) |
 | `run_block --check-update` | Check GitHub for a newer version |
 | `run_block -V`, `--version` | Print version and exit `0` |

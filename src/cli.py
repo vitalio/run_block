@@ -82,18 +82,29 @@ def main(argv: list[str] | None = None) -> int:
     if "-V" in args or "--version" in args:
         sys.stdout.write(f"{prog} {VERSION}\n")
         return 0
-    if "--config" in args:
-        return cmd_show_config()
-    if "--init-config" in args:
-        force = "--force" in args
-        return cmd_init_config(force=force)
     if "--agents" in args or "--agents-md" in args:
         sys.stdout.write(agents_markdown(prog) + "\n")
         return 0
+    if args and args[0] == "--plan":
+        if len(args) != 1:
+            raise SystemExit(f"{prog}: usage: {prog} --plan < script.sh")
+        return cmd_plan(sys.stdin.read())
+    if args and args[0] == "--clean":
+        return cmd_clean(args[1:])
+
+    auto_yes = False
+    filtered: list[str] = []
+    for a in args:
+        if a in ("-y", "--yes", "--headless"):
+            auto_yes = True
+        else:
+            filtered.append(a)
+    args = filtered
+
     if not args:
         if not sys.stdin.isatty():
             session = resolve_initial_session(ensure_base())
-            return cmd_normal(f"{session}/1", sys.stdin.read())
+            return cmd_normal(f"{session}/1", sys.stdin.read(), auto_yes=auto_yes)
         sys.stderr.write(usage_text())
         return 2
 
@@ -109,11 +120,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args[0] in ("--retry", "--rerun"):
         if len(args) > 2:
-            raise SystemExit(f"{prog}: usage: {prog} --retry [session/step]")
-        return cmd_retry(args[1] if len(args) == 2 else None)
-
-    if args[0] == "--clean":
-        return cmd_clean(args[1:])
+            raise SystemExit(f"{prog}: usage: {prog} --retry [-y] [session/step]")
+        return cmd_retry(args[1] if len(args) == 2 else None, auto_yes=auto_yes)
 
     if args[0] == "--check-update":
         if len(args) != 1:
@@ -132,14 +140,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args[0] == "--fix":
         if len(args) != 2:
-            raise SystemExit(f"{prog}: usage: {prog} --fix <session>/<target>")
-        return cmd_fix(args[1], sys.stdin.read())
+            raise SystemExit(f"{prog}: usage: {prog} --fix [-y] <session>/<target>")
+        return cmd_fix(args[1], sys.stdin.read(), auto_yes=auto_yes)
 
     if len(args) != 1 or args[0].startswith("-"):
         raise SystemExit(
-            f"{prog}: usage: {prog} [<session>/<step>] (or --fix / --retry / --list / --show / --clean / --start / --config / --agents / --update / --version / --help)"
+            f"{prog}: usage: {prog} [-y] [<session>/<step>] (or --plan / --fix / --retry / --list / --show / --clean / --start / --agents / --update / --version / --help)"
         )
-    return cmd_normal(args[0], sys.stdin.read())
+    return cmd_normal(args[0], sys.stdin.read(), auto_yes=auto_yes)
 
 
 if __name__ == "__main__":

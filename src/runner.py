@@ -92,18 +92,24 @@ def write_private(path: Path, content: str, overwrite: bool = False) -> None:
         f.write(content)
 
 
-def not_run_exit(label: str, sdir: Path, step_name: str, out_path: Path, msg: str, rc: int = 2) -> int:
+def not_run_exit(
+    label: str, sdir: Path, step_name: str, out_path: Path, msg: str, rc: int = 2, headless: bool = False
+) -> int:
     sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
     line = msg if msg.endswith("\n") else msg + "\n"
     clean_msg = msg.strip()
     prefix = f"[{label}] NOT RUN:"
     detail = clean_msg[len(prefix):].strip() if clean_msg.startswith(prefix) else clean_msg
-    sys.stdout.write(format_info_box(f"[{label}] [!] NOT RUN", [detail]) + "\n")
+    if headless or os.environ.get("RUN_BLOCK_HEADLESS") == "1":
+        sys.stdout.write(line)
+    else:
+        sys.stdout.write(format_info_box(f"[{label}] [!] NOT RUN", [detail]) + "\n")
     sys.stdout.flush()
     err_target = sdir / f"{step_name}.error.txt" if out_path.exists() else out_path
     try:
         write_private(err_target, line, overwrite=True)
-        offer_clipboard_copy(label, err_target, ok=False, rc=rc)
+        if not headless and os.environ.get("RUN_BLOCK_HEADLESS") != "1":
+            offer_clipboard_copy(label, err_target, ok=False, rc=rc)
     except Exception:
         pass
     return rc
@@ -115,7 +121,9 @@ def run_script(
     out_path: Path,
     header_lines: list[str] | None = None,
     cleanup_on_abort: list[Path] | None = None,
+    auto_yes: bool = False,
 ) -> int:
+    headless = auto_yes or os.environ.get("RUN_BLOCK_HEADLESS") == "1"
     work_dir = get_work_dir(script_path.parent)
     shell_bin, _ = get_setting("shell")
     is_ps = _is_powershell(shell_bin)
@@ -146,18 +154,28 @@ def run_script(
         msg = chk.stdout or "syntax check failed\n"
         end_line = f"[{label}] END (syntax error, exit {chk.returncode}) — output: {out_path}\n"
         full_output = start_line + msg + end_line
-        box_lines = [f"Script: {script_path}", *(msg.rstrip("\n").splitlines())]
-        sys.stdout.write(format_info_box(f"[{label}] [!] SYNTAX ERROR (exit {chk.returncode})", box_lines) + "\n")
+        if headless:
+            sys.stdout.write(full_output)
+        else:
+            box_lines = [f"Script: {script_path}", *(msg.rstrip("\n").splitlines())]
+            sys.stdout.write(format_info_box(f"[{label}] [!] SYNTAX ERROR (exit {chk.returncode})", box_lines) + "\n")
         sys.stdout.flush()
         write_private(out_path, full_output)
-        offer_clipboard_copy(label, out_path, ok=False, rc=chk.returncode)
+        if not headless:
+            offer_clipboard_copy(label, out_path, ok=False, rc=chk.returncode)
         return chk.returncode
 
     aborted_marker = script_path.with_suffix(".aborted")
     summary_obj = summarize_script_actions(script_text, work_dir=work_dir)
-    if not confirm_execution(label, script_text, summary=summary_obj, script_path=script_path):
+    approved, abort_reason = confirm_execution(
+        label, script_text, summary=summary_obj, script_path=script_path, auto_yes=headless
+    )
+    if not approved:
         write_private(aborted_marker, "aborted\n", overwrite=True)
-        return not_run_exit(label, script_path.parent, script_path.stem, out_path, f"[{label}] NOT RUN: aborted by user (re-run with: {prog_name()} --retry {label})", rc=130)
+        reason_str = abort_reason or f"aborted by user (re-run with: {prog_name()} --retry {label})"
+        return not_run_exit(
+            label, script_path.parent, script_path.stem, out_path, f"[{label}] NOT RUN: {reason_str}", rc=130, headless=headless
+        )
     aborted_marker.unlink(missing_ok=True)
 
     start_line = f"[{label}] START (script: {script_path})\n"
@@ -168,13 +186,16 @@ def run_script(
         for hl in h.rstrip("\n").splitlines():
             start_box_lines.append(hl)
     log_chunks.append("\n")
-    sys.stdout.write(format_info_box(f"[{label}] START", start_box_lines) + "\n\n")
+    if headless:
+        sys.stdout.write("".join(log_chunks))
+    else:
+        sys.stdout.write(format_info_box(f"[{label}] START", start_box_lines) + "\n\n")
     sys.stdout.flush()
 
     tty_in = None
     master_fd = None
     slave_fd = None
-    if HAS_PTY and sys.stdout.isatty() and not no_clipboard():
+    if HAS_PTY and sys.stdout.isatty() and not no_clipboard() and not headless:
         try:
             tty_in = open("/dev/tty", "rb", buffering=0)
             master_fd, slave_fd = pty.openpty()
@@ -251,17 +272,21 @@ def run_script(
     exit_str = f" (exit {rc})" if rc != 0 else ""
     end_line = f"\n[{label}] END{exit_str} — output: {out_path}\n"
     log_chunks.append(end_line)
-    if in_run_block() or not sys.stdout.isatty() or clipboard_mode() != "prompt":
+    if headless:
+        sys.stdout.write(end_line)
+    elif in_run_block() or not sys.stdout.isatty() or clipboard_mode() != "prompt":
         sys.stdout.write("\n" + format_info_box(f"[{label}] END{exit_str}", [f"Output: {out_path}"]) + "\n")
     sys.stdout.flush()
     full_output = CR_LINE_RE.sub("", ANSI_RE.sub("", "".join(log_chunks))).replace("\r\n", "\n")
     write_private(out_path, full_output)
-    clip_target = resolve_clipboard_target(out_path, full_output)
-    offer_clipboard_copy(label, clip_target, ok=(rc == 0), rc=rc)
+    if not headless:
+        clip_target = resolve_clipboard_target(out_path, full_output)
+        offer_clipboard_copy(label, clip_target, ok=(rc == 0), rc=rc)
     return rc
 
 
-def cmd_normal(ref: str, payload: str) -> int:
+def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
+    headless = auto_yes or os.environ.get("RUN_BLOCK_HEADLESS") == "1"
     session, step = parse_ref(ref, allow_fix_step=False)
     step_num = int(step)
     if step_num < 1:
@@ -278,7 +303,7 @@ def cmd_normal(ref: str, payload: str) -> int:
         out_path.unlink(missing_ok=True)
         aborted_marker.unlink(missing_ok=True)
     elif script_path.exists() or out_path.exists():
-        if sys.stdout.isatty() and not no_clipboard():
+        if sys.stdout.isatty() and not no_clipboard() and not headless:
             if prompt_yes_no_box(
                 f"[{label}] [!] STEP ALREADY EXISTS",
                 [f"Step file already exists: {script_path}"],
@@ -290,11 +315,11 @@ def cmd_normal(ref: str, payload: str) -> int:
                 overwrite = True
                 out_path.unlink(missing_ok=True)
         if not overwrite:
-            return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: step already exists — output: {out_path}")
+            return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: step already exists — output: {out_path}", headless=headless)
     if step_num > 1 and not _find_step_script(sdir, str(step_num - 1)).exists():
         prev_label = f"{session}/{step_num - 1}"
         allow_skip = False
-        if sys.stdout.isatty() and not no_clipboard():
+        if sys.stdout.isatty() and not no_clipboard() and not headless:
             allow_skip = prompt_yes_no_box(
                 f"[{label}] [!] MISSING PREVIOUS STEP",
                 [f"Previous step {prev_label} has not been run yet."],
@@ -310,15 +335,17 @@ def cmd_normal(ref: str, payload: str) -> int:
                 step,
                 out_path,
                 f"[{label}] NOT RUN: previous step {prev_label} has not been run yet",
+                headless=headless,
             )
     if not payload.strip():
-        return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: empty script on stdin")
+        return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: empty script on stdin", headless=headless)
 
     write_private(script_path, payload, overwrite=overwrite)
-    return run_script(label, script_path, out_path, cleanup_on_abort=[script_path])
+    return run_script(label, script_path, out_path, cleanup_on_abort=[script_path], auto_yes=auto_yes)
 
 
-def cmd_fix(ref: str, fix_code: str) -> int:
+def cmd_fix(ref: str, fix_code: str, auto_yes: bool = False) -> int:
+    headless = auto_yes or os.environ.get("RUN_BLOCK_HEADLESS") == "1"
     session, target = parse_ref(ref, allow_fix_step=True)
     sdir = ensure_base() / session
     src_script = _find_step_script(sdir, target)
@@ -368,7 +395,7 @@ def cmd_fix(ref: str, fix_code: str) -> int:
         )
     )
     header = [f"[{label}] patched {target}{ext} -> {new_step}{ext}:\n", diff]
-    return run_script(label, script_path, out_path, header_lines=header, cleanup_on_abort=[fix_path, script_path])
+    return run_script(label, script_path, out_path, header_lines=header, cleanup_on_abort=[fix_path, script_path], auto_yes=auto_yes)
 
 
 def _step_sort_key(stem: str) -> tuple[int, int]:
@@ -476,7 +503,7 @@ def cmd_show(ref: str | None = None) -> int:
     return 0
 
 
-def cmd_retry(ref: str | None = None) -> int:
+def cmd_retry(ref: str | None = None, auto_yes: bool = False) -> int:
     if ref:
         session, step = parse_ref(ref, allow_fix_step=True)
     else:
@@ -488,7 +515,7 @@ def cmd_retry(ref: str | None = None) -> int:
         raise SystemExit(f"{prog_name()}: block {session}/{step} not found ({script_path})")
     out_path.unlink(missing_ok=True)
     (sdir / f"{step}.aborted").unlink(missing_ok=True)
-    return run_script(f"{session}/{step}", script_path, out_path, cleanup_on_abort=[])
+    return run_script(f"{session}/{step}", script_path, out_path, cleanup_on_abort=[], auto_yes=auto_yes)
 
 
 def _dir_size_bytes(path: Path) -> int:

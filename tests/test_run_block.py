@@ -43,14 +43,14 @@ class TestRunBlock(unittest.TestCase):
                 "RUN_BLOCK_SHELL",
                 "RUN_BLOCK_SAFETY_DISABLE",
                 "RUN_BLOCK_SAFETY_RULES",
-                "RUN_BLOCK_RULES_DIR",
+                "RUN_BLOCK_APPROVE_CMD",
+                "RUN_BLOCK_HEADLESS",
             )
         }
         os.environ["RUN_BLOCK_NO_CLIPBOARD"] = "1"
         os.environ.pop("IN_RUN_BLOCK", None)
         self.tmp = Path(tempfile.mkdtemp(prefix="rb_test_"))
         os.environ["RUN_BLOCK_DIR"] = str(self.tmp)
-        os.environ["RUN_BLOCK_CONFIG"] = str(self.tmp / "config")
         self.mod = load_module()
         self.mod.BASE_DIR = self.tmp
 
@@ -66,7 +66,8 @@ class TestRunBlock(unittest.TestCase):
         r = subprocess.run([str(SCRIPT), "-h"], capture_output=True, text=True, check=False)
         self.assertEqual(r.returncode, 0)
         self.assertIn("Usage:", r.stdout)
-        self.assertIn("--config", r.stdout)
+        self.assertIn("--plan", r.stdout)
+        self.assertNotIn("--config", r.stdout)
         self.assertIn("--agents", r.stdout)
         self.assertIn("--start", r.stdout)
         self.assertNotIn("--init-start", r.stdout)
@@ -77,27 +78,62 @@ class TestRunBlock(unittest.TestCase):
         ver_file = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
         self.assertEqual(rv.stdout.strip(), f"run_block {ver_file}")
 
-    def test_config_init_and_precedence(self):
-        cfg_file = self.tmp / "custom_config"
-        env = {**os.environ, "RUN_BLOCK_CONFIG": str(cfg_file)}
-        env.pop("RUN_BLOCK_DIR", None)
-        env.pop("RUN_BLOCK_CONFIRM", None)
+    def test_plan_cli_and_headless_and_approve_cmd(self):
+        import json
+        r_plan = subprocess.run(
+            [str(SCRIPT), "--plan"],
+            input="git status -sb\nrm -rf /tmp/x\n",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(r_plan.returncode, 0, r_plan.stderr)
+        plan_data = json.loads(r_plan.stdout)
+        self.assertTrue(plan_data["syntax_ok"])
+        self.assertFalse(plan_data["safe"])
+        self.assertEqual(plan_data["findings"][0]["category"], "fs-destructive")
 
-        r_init = subprocess.run([str(SCRIPT), "--init-config"], capture_output=True, text=True, env=env, check=False)
-        self.assertEqual(r_init.returncode, 0)
-        self.assertTrue(cfg_file.is_file())
+        r_bad_plan = subprocess.run(
+            [str(SCRIPT), "--plan"],
+            input="if true; then\n",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(r_bad_plan.returncode, 1)
+        bad_data = json.loads(r_bad_plan.stdout)
+        self.assertFalse(bad_data["syntax_ok"])
 
-        # Write custom settings to config file
-        cfg_file.write_text("work_dir = cwd\ntoken_stats = false\n", encoding="utf-8")
-        r_cfg = subprocess.run([str(SCRIPT), "--config"], capture_output=True, text=True, env=env, check=False)
-        self.assertEqual(r_cfg.returncode, 0)
-        self.assertIn("work_dir       = cwd  (from config)", r_cfg.stdout)
-        self.assertIn("token_stats    = false  (from config)", r_cfg.stdout)
+        r_headless = subprocess.run(
+            [str(SCRIPT), "-y", "s1/1"],
+            input="echo headless_ok\n",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(r_headless.returncode, 0)
+        self.assertIn("[s1/1] START (script:", r_headless.stdout)
+        self.assertIn("headless_ok", r_headless.stdout)
+        self.assertIn("[s1/1] END — output:", r_headless.stdout)
+        self.assertNotIn("┌─", r_headless.stdout)
 
-        # Env var overrides config file
-        env["RUN_BLOCK_CWD"] = "/tmp"
-        r_cfg2 = subprocess.run([str(SCRIPT), "--config"], capture_output=True, text=True, env=env, check=False)
-        self.assertIn("work_dir       = /tmp  (from env)", r_cfg2.stdout)
+        env_reject = {**os.environ, "RUN_BLOCK_APPROVE_CMD": "echo 'Blocked by LLM policy' && exit 1"}
+        r_rej = subprocess.run(
+            [str(SCRIPT), "-y", "s1/2"],
+            input="echo should_not_run\n",
+            capture_output=True,
+            text=True,
+            env=env_reject,
+            check=False,
+        )
+        self.assertEqual(r_rej.returncode, 130)
+        self.assertIn("NOT RUN: Blocked by LLM policy", r_rej.stdout)
+
+        box, _, _ = self.mod.format_safety_box(
+            "s1/3", [], default_yes=True, summary=self.mod.summarize_script_actions("ls -la\n"), note="LLM review: read-only ls"
+        )
+        self.assertIn("Analyzer:", box)
+        self.assertIn("LLM review: read-only ls", box)
 
     def test_safety_scanner_categories(self):
         script = "\n".join([
@@ -398,23 +434,22 @@ class TestRunBlock(unittest.TestCase):
             os.environ.pop("RUN_BLOCK_SHELL", None)
 
     def test_custom_safety_rules_and_disable(self):
-        cfg_path = self.tmp / "config"
-        cfg_path.write_text(
-            "safety_disable = external-write\n"
-            "safety_rule.prod-db = \\bpsql\\b.*prod\n"
-            "safety_rule.privilege-system = \\bsudo\\s+reboot\\b\n",
-            encoding="utf-8",
-        )
-        script = "\n".join([
-            "git push origin main",
-            "sudo apt install htop",
-            "sudo reboot",
-            "psql -h prod.db.internal",
-        ])
-        findings = self.mod.scan_script_risks(script)
-        cats = [f["category"] for f in findings]
-        self.assertNotIn("git-push", cats)
-        self.assertEqual(cats, ["privilege-system", "prod-db"])
+        os.environ["RUN_BLOCK_SAFETY_DISABLE"] = "external-write"
+        os.environ["RUN_BLOCK_SAFETY_RULES"] = r"prod-db=\bpsql\b.*prod; privilege-system=\bsudo\s+reboot\b"
+        try:
+            script = "\n".join([
+                "git push origin main",
+                "sudo apt install htop",
+                "sudo reboot",
+                "psql -h prod.db.internal",
+            ])
+            findings = self.mod.scan_script_risks(script)
+            cats = [f["category"] for f in findings]
+            self.assertNotIn("git-push", cats)
+            self.assertEqual(cats, ["privilege-system", "prod-db"])
+        finally:
+            os.environ.pop("RUN_BLOCK_SAFETY_DISABLE", None)
+            os.environ.pop("RUN_BLOCK_SAFETY_RULES", None)
 
     def test_clean_sessions_and_build_py_check(self):
         r_bhelp = subprocess.run(["python3", str(ROOT / "build.py"), "-h"], capture_output=True, text=True, check=False)

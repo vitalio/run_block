@@ -51,7 +51,6 @@ RISK_RULES: list[tuple[str, str, re.Pattern[str]]] = [
 
 
 def get_active_risk_rules() -> list[tuple[str, str, re.Pattern[str]]]:
-    cfg = parse_config_file()
     raw_dis, _ = get_setting("safety_disable")
     disabled: set[str] = {
         x.strip().lower()
@@ -61,15 +60,6 @@ def get_active_risk_rules() -> list[tuple[str, str, re.Pattern[str]]]:
     if "external-write" in disabled:
         disabled.update(("git-push", "net-write"))
     custom_map: dict[str, str] = {}
-    for k, v in cfg.items():
-        if k.startswith("safety_rule."):
-            cat = k[len("safety_rule."):].strip().lower()
-            if not cat:
-                continue
-            if v.strip().lower() in ("off", "none", "false", "0", "disable", "disabled"):
-                disabled.add(cat)
-            elif v.strip():
-                custom_map[cat] = v.strip()
     env_rules = os.environ.get("RUN_BLOCK_SAFETY_RULES", "").strip()
     if env_rules:
         for item in env_rules.split(";"):
@@ -419,3 +409,118 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
             seen_pairs.add(pair)
             deduped.append(f)
     return deduped
+
+
+def check_script_syntax(script_text: str, work_dir: Path | None = None) -> tuple[bool, str | None, int]:
+    wdir = work_dir if work_dir is not None else get_work_dir()
+    shell_bin, _ = get_setting("shell")
+    is_ps = _is_powershell(shell_bin)
+    ext = ".ps1" if is_ps else ".sh"
+    fd, tmp_name = tempfile.mkstemp(prefix="rb_chk_", suffix=ext)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(script_text)
+        if is_ps:
+            ps_check = (
+                "$err = $null; "
+                "[void][System.Management.Automation.Language.Parser]::ParseFile($args[0], [ref]$null, [ref]$err); "
+                "if ($err) { foreach ($e in $err) { [Console]::Error.WriteLine($e.ToString()) }; exit 1 }"
+            )
+            chk_cmd = [shell_bin, "-NoProfile", "-NonInteractive", "-Command", ps_check, str(tmp_path)]
+        else:
+            chk_cmd = [shell_bin, "-n", str(tmp_path)]
+        chk = subprocess.run(
+            chk_cmd,
+            cwd=wdir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+        if chk.returncode != 0:
+            return False, (chk.stdout or "syntax check failed").strip(), chk.returncode
+        return True, None, 0
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def analyze_script(
+    script_text: str,
+    work_dir: Path | None = None,
+    label: str | None = None,
+    check_syntax: bool = True,
+) -> dict[str, object]:
+    wdir = (work_dir if work_dir is not None else get_work_dir()).resolve()
+    summary = summarize_script_actions(script_text, work_dir=wdir)
+    findings = scan_script_risks(script_text)
+    syntax_ok = True
+    syntax_error: str | None = None
+    if check_syntax:
+        syntax_ok, syntax_error, _ = check_script_syntax(script_text, work_dir=wdir)
+    return {
+        "label": label or "",
+        "syntax_ok": syntax_ok,
+        "syntax_error": syntax_error,
+        "work_dir": str(wdir),
+        "meta": summary.get("meta", ""),
+        "rows": [list(r) for r in (summary.get("rows") or [])],
+        "operations": [list(op) for op in (summary.get("operations") or [])],
+        "operation_groups": [
+            [g_dir, [list(op) for op in g_items]]
+            for g_dir, g_items in (summary.get("operation_groups") or [])
+        ],
+        "cd_dirs": list(summary.get("cd_dirs") or []),
+        "findings": findings,
+        "safe": bool(syntax_ok and len(findings) == 0),
+    }
+
+
+def run_approve_cmd(
+    approve_cmd: str,
+    label: str,
+    script_text: str,
+    plan: dict[str, object],
+    script_path: Path | None = None,
+) -> tuple[str, str]:
+    """Runs external approval command. Returns (decision, note) where decision is 'approve', 'prompt', or 'reject'."""
+    payload = {
+        **plan,
+        "label": label,
+        "script_path": str(script_path) if script_path is not None else "",
+        "script": script_text,
+    }
+    env = {
+        **os.environ,
+        "RUN_BLOCK_LABEL": label,
+        "RUN_BLOCK_WORKDIR": str(plan.get("work_dir") or ""),
+    }
+    if script_path is not None:
+        env["RUN_BLOCK_SCRIPT"] = str(script_path)
+    try:
+        proc = subprocess.run(
+            approve_cmd,
+            shell=True,
+            input=json.dumps(payload, ensure_ascii=False) + "\n",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            check=False,
+        )
+    except Exception as exc:
+        return "reject", f"approve command failed: {exc}"
+    note = (proc.stdout or "").strip()
+    if proc.returncode == 0:
+        return "approve", note
+    if proc.returncode == 2:
+        return "prompt", note
+    return "reject", (note or f"rejected by approve command (exit {proc.returncode})")
+
+
+def cmd_plan(stdin_text: str) -> int:
+    plan = analyze_script(stdin_text, check_syntax=True)
+    sys.stdout.write(json.dumps(plan, indent=2, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+    return 0 if plan.get("syntax_ok") else 1
+
