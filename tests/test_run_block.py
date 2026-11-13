@@ -41,6 +41,9 @@ class TestRunBlock(unittest.TestCase):
                 "IN_RUN_BLOCK",
                 "RUN_BLOCK_UPDATE_URL",
                 "RUN_BLOCK_LANG",
+                "RUN_BLOCK_SHELL",
+                "RUN_BLOCK_SAFETY_DISABLE",
+                "RUN_BLOCK_SAFETY_RULES",
             )
         }
         os.environ["RUN_BLOCK_NO_CLIPBOARD"] = "1"
@@ -87,13 +90,13 @@ class TestRunBlock(unittest.TestCase):
         cfg_file.write_text("work_dir = cwd\ntoken_stats = false\n", encoding="utf-8")
         r_cfg = subprocess.run([str(SCRIPT), "--config"], capture_output=True, text=True, env=env, check=False)
         self.assertEqual(r_cfg.returncode, 0)
-        self.assertIn("work_dir     = cwd  (from config)", r_cfg.stdout)
-        self.assertIn("token_stats  = false  (from config)", r_cfg.stdout)
+        self.assertIn("work_dir       = cwd  (from config)", r_cfg.stdout)
+        self.assertIn("token_stats    = false  (from config)", r_cfg.stdout)
 
         # Env var overrides config file
         env["RUN_BLOCK_CWD"] = "/tmp"
         r_cfg2 = subprocess.run([str(SCRIPT), "--config"], capture_output=True, text=True, env=env, check=False)
-        self.assertIn("work_dir     = /tmp  (from env)", r_cfg2.stdout)
+        self.assertIn("work_dir       = /tmp  (from env)", r_cfg2.stdout)
 
     def test_safety_scanner_categories(self):
         script = "\n".join([
@@ -405,6 +408,112 @@ class TestRunBlock(unittest.TestCase):
         )
         self.assertTrue(ok)
         self.assertIn("✓ Confirmed by user.", tty_w.getvalue())
+
+    def test_powershell_mode_and_agents(self):
+        fake_pwsh = self.tmp / "pwsh"
+        fake_pwsh.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$3\" = \"-Command\" ]; then\n"
+            "  grep -q 'SYNTAX_ERR' \"$5\" && { echo 'ParseError: missing closing brace' >&2; exit 1; }\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$2\" = \"-File\" ]; then\n"
+            "  sh \"$3\"\n"
+            "  exit $?\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        fake_pwsh.chmod(0o755)
+        os.environ["RUN_BLOCK_SHELL"] = str(fake_pwsh)
+        try:
+            self.assertTrue(self.mod._is_powershell())
+            self.assertEqual(self.mod._script_ext(), ".ps1")
+            md = self.mod.agents_markdown("run_block")
+            self.assertIn("powershell", md)
+            self.assertIn("'@ | run_block s1/1", md)
+            self.assertIn("fresh `pwsh` process", md)
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc_ok = self.mod.cmd_normal("s1/1", "echo ps1_ran_ok\n")
+                self.assertEqual(rc_ok, 0)
+                self.assertTrue((self.tmp / "s1/1.ps1").is_file())
+                rc_err = self.mod.cmd_normal("s1/2", "echo SYNTAX_ERR\n")
+                self.assertNotEqual(rc_err, 0)
+                rc_fix = self.mod.cmd_fix("s1/2", "text = text.replace('SYNTAX_ERR', 'fixed_ps1')\n")
+                self.assertEqual(rc_fix, 0)
+                self.assertTrue((self.tmp / "s1/2_1.ps1").is_file())
+            self.assertIn("ps1_ran_ok", (self.tmp / "s1/1.txt").read_text(encoding="utf-8"))
+            self.assertIn("fixed_ps1", (self.tmp / "s1/2_1.txt").read_text(encoding="utf-8"))
+        finally:
+            os.environ.pop("RUN_BLOCK_SHELL", None)
+
+    def test_custom_safety_rules_and_disable(self):
+        cfg_path = self.tmp / "config"
+        cfg_path.write_text(
+            "safety_disable = external-write\n"
+            "safety_rule.prod-db = \\bpsql\\b.*prod\n"
+            "safety_rule.privilege-system = \\bsudo\\s+reboot\\b\n",
+            encoding="utf-8",
+        )
+        script = "\n".join([
+            "git push origin main",
+            "sudo apt install htop",
+            "sudo reboot",
+            "psql -h prod.db.internal",
+        ])
+        findings = self.mod.scan_script_risks(script)
+        cats = [f["category"] for f in findings]
+        self.assertNotIn("external-write", cats)
+        self.assertEqual(cats, ["privilege-system", "prod-db"])
+
+    def test_clean_sessions(self):
+        for idx in range(1, 5):
+            sdir = self.tmp / f"s{idx}"
+            sdir.mkdir()
+            (sdir / "1.sh").write_text(f"echo {idx}\n", encoding="utf-8")
+            (sdir / "1.txt").write_text(f"out {idx}\n", encoding="utf-8")
+            os.utime(sdir, (1000 + idx * 10, 1000 + idx * 10))
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = self.mod.cmd_clean(["--keep", "2", "--yes"])
+        self.assertEqual(rc, 0)
+        self.assertIn("Cleaned 2 session(s)", buf.getvalue())
+        remaining = sorted(p.name for p in self.tmp.iterdir() if p.is_dir())
+        self.assertEqual(remaining, ["s3", "s4"])
+
+        buf_all = io.StringIO()
+        with contextlib.redirect_stdout(buf_all):
+            rc_all = self.mod.cmd_clean(["--all", "--yes"])
+        self.assertEqual(rc_all, 0)
+        self.assertEqual([p.name for p in self.tmp.iterdir() if p.is_dir()], [])
+
+    def test_repo_tree_and_budget_collapsing(self):
+        repo = self.tmp / "tree_repo"
+        repo.mkdir()
+        (repo / "README.md").write_text("# Hello\nLine 2\n", encoding="utf-8")
+        big_dir = repo / "pkg" / "deep"
+        big_dir.mkdir(parents=True)
+        for i in range(25):
+            (big_dir / f"mod_{i:02d}.py").write_text("x = 1\ny = 2\nz = 3\n", encoding="utf-8")
+
+        full_tree = self.mod.build_repo_tree(root_dir=repo, max_lines=100, max_tokens=2000)
+        self.assertIn("README.md (2L)", full_tree)
+        self.assertIn("mod_00.py (3L)", full_tree)
+        self.assertIn("# Total: 26 files, 77 lines", full_tree)
+
+        compact_tree = self.mod.build_repo_tree(root_dir=repo, max_lines=10, max_tokens=500)
+        self.assertLessEqual(len(compact_tree.splitlines()), 10)
+        self.assertIn("deep/ (25 files, 75L)", compact_tree)
+        self.assertNotIn("mod_00.py", compact_tree)
+
+        # Verify in-process execution via .run_block.start
+        (repo / ".run_block.start").write_text("$ run_block --tree --max-lines 10\n", encoding="utf-8")
+        res = self.mod.build_start_bundle("s1", work_dir=repo)
+        self.assertIn("===== $ run_block --tree --max-lines 10 =====", str(res["full"]))
+        self.assertIn("deep/ (25 files, 75L)", str(res["full"]))
 
 if __name__ == "__main__":
     unittest.main()

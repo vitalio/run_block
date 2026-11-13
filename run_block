@@ -6,6 +6,8 @@
   {prog} --retry [session/step]      Re-run the last (or specified) block
   {prog} --list | -l [session]       List sessions or blocks in a session
   {prog} --show [session/step]       Show script and output of a block (or <session>/0 bundle)
+  {prog} --clean [--keep N | --all]  Prune old session directories in {base_dir} (default: --keep 5)
+  {prog} --tree [DIR] [opts]         Print token-budgeted repository file tree (--max-lines N, --max-tokens N)
   {prog} --start [opts] [FILE ...]   Build session bundle ({base_dir}/<session>/0.txt) from .run_block.start
                                         Opts: --session NAME, -p/--prompt TEXT, --force
   {prog} --init-start [--force]      Create a starter .run_block.start in the current directory
@@ -51,7 +53,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 START_FILE_NAME = ".run_block.start"
@@ -163,6 +165,19 @@ def get_setting(key: str, prog: str | None = None) -> tuple[str, str]:
         if "block_lang" in cfg and cfg["block_lang"]:
             return cfg["block_lang"].strip(), "config"
         return "English", "default"
+    if key == "safety_disable":
+        if os.environ.get("RUN_BLOCK_SAFETY_DISABLE") is not None:
+            return os.environ["RUN_BLOCK_SAFETY_DISABLE"].strip(), "env"
+        if "safety_disable" in cfg:
+            return cfg["safety_disable"].strip(), "config"
+        return "", "default"
+    if key == "safety_rules":
+        if os.environ.get("RUN_BLOCK_SAFETY_RULES") is not None:
+            return os.environ["RUN_BLOCK_SAFETY_RULES"].strip(), "env"
+        custom = [f"{k[len('safety_rule.'):]}={v}" for k, v in cfg.items() if k.startswith("safety_rule.") and v]
+        if custom:
+            return "; ".join(custom), "config"
+        return "", "default"
     if key == "update_url":
         if os.environ.get("RUN_BLOCK_UPDATE_URL"):
             return os.environ["RUN_BLOCK_UPDATE_URL"].strip(), "env"
@@ -170,6 +185,36 @@ def get_setting(key: str, prog: str | None = None) -> tuple[str, str]:
             return cfg["update_url"].strip(), "config"
         return DEFAULT_UPDATE_URL, "default"
     raise KeyError(f"unknown setting: {key}")
+
+
+def _is_powershell(shell_bin: str | None = None) -> bool:
+    sh = shell_bin if shell_bin is not None else get_setting("shell")[0]
+    name = Path(sh).name.lower()
+    for suf in (".exe", ".cmd", ".bat"):
+        if name.endswith(suf):
+            name = name[:-len(suf)]
+            break
+    return name in ("pwsh", "powershell")
+
+
+def _script_ext(shell_bin: str | None = None) -> str:
+    return ".ps1" if _is_powershell(shell_bin) else ".sh"
+
+
+def _find_step_script(sdir: Path, step: str, shell_bin: str | None = None) -> Path:
+    for ext in (".sh", ".ps1"):
+        p = sdir / f"{step}{ext}"
+        if p.exists():
+            return p
+    return sdir / f"{step}{_script_ext(shell_bin)}"
+
+
+def _iter_session_scripts(sdir: Path) -> list[Path]:
+    by_stem: dict[str, Path] = {}
+    for ext in (".sh", ".ps1"):
+        for p in sdir.glob(f"*{ext}"):
+            by_stem.setdefault(p.stem, p)
+    return [by_stem[k] for k in sorted(by_stem.keys(), key=_step_sort_key)]
 
 
 def default_base_dir(prog: str | None = None) -> Path:
@@ -205,7 +250,7 @@ def default_config_template(prog: str | None = None) -> str:
         "# Show output size in bytes and estimated token counts (Claude / GPT / Gemini):",
         "token_stats = true",
         "",
-        "# Shell executable used for syntax checking (-n) and running blocks:",
+        "# Shell executable used for syntax checking and running blocks (e.g. bash, sh, pwsh):",
         "shell = bash",
         "",
         "# Terminal editor/viewer opened when pressing 'v' or 'e' in BLOCK PLAN:",
@@ -215,6 +260,11 @@ def default_config_template(prog: str | None = None) -> str:
         "# Language for commands, comments, and echo output inside blocks (chat prose uses user's language):",
         "#   English (default), or 'none' to omit the language rule from --agents",
         "block_lang = English",
+        "",
+        "# Safety scanner customization:",
+        "#   safety_disable = external-write, privilege-system",
+        "#   safety_rule.<category> = <regex>  (adds a new category or overrides a built-in one)",
+        "# safety_disable = ",
         "",
     ]
     return "\n".join(lines)
@@ -226,9 +276,11 @@ def cmd_show_config() -> int:
     exists_str = "exists" if cfg_path.is_file() else "not created yet (run --init-config)"
     sys.stdout.write(f"Config file: {cfg_path} ({exists_str})\n\n")
     sys.stdout.write("Active settings:\n")
-    for k in ("base_dir", "work_dir", "clipboard", "token_stats", "shell", "editor", "block_lang"):
+    for k in ("base_dir", "work_dir", "clipboard", "token_stats", "shell", "editor", "block_lang", "safety_disable", "safety_rules"):
         val, src = get_setting(k, prog=prog)
-        sys.stdout.write(f"  {k:<12} = {val}  (from {src})\n")
+        if k in ("safety_disable", "safety_rules") and not val and src == "default":
+            continue
+        sys.stdout.write(f"  {k:<14} = {val}  (from {src})\n")
     return 0
 
 
@@ -259,17 +311,41 @@ def agents_markdown(prog: str | None = None) -> str:
     lang, _ = get_setting("block_lang", prog=cmd)
     lang_clean = lang.strip()
     has_lang = bool(lang_clean and lang_clean.lower() not in ("none", "off", "false"))
+    is_ps = _is_powershell()
+    fence_lang = "powershell" if is_ps else "bash"
+    shell_label = "pwsh" if is_ps else "bash"
+    open_block = [f"{f3}powershell", "@'", "git status -sb", f"'@ | {cmd} s1/1", f"{f3}"] if is_ps else [f"{f3}bash", f"{cmd} s1/1 <<'{rb}'", "git status -sb", f"{rb}", f"{f3}"]
+    first_block_ex = f"`@' ... '@ | {cmd}`" if is_ps else f"`{cmd} <<'{rb}'`"
+    fix_block = (
+        [
+            f"{f3}powershell",
+            "@'",
+            "old = 'wrong_command'",
+            "new = 'right_command'",
+            "assert text.count(old) == 1",
+            "text = text.replace(old, new, 1)",
+            f"'@ | {cmd} --fix s1/1",
+            f"{f3}",
+        ]
+        if is_ps
+        else [
+            f"{f3}bash",
+            f"{cmd} --fix s1/1 <<'{rf}'",
+            "old = 'wrong_command'",
+            "new = 'right_command'",
+            "assert text.count(old) == 1",
+            "text = text.replace(old, new, 1)",
+            f"{rf}",
+            f"{f3}",
+        ]
+    )
 
     lines = [
         f"## Terminal blocks (`{cmd}` v{VERSION})",
         "",
         f"You have no direct shell access. To run commands, end your reply with a `{cmd}` Markdown code block in this exact format:",
         "",
-        f"{f3}bash",
-        f"{cmd} s1/1 <<'{rb}'",
-        "git status -sb",
-        f"{rb}",
-        f"{f3}",
+        *open_block,
         "",
         "### CRITICAL — STRICT LAYOUT & MARKDOWN FENCE RULES",
         "",
@@ -278,13 +354,25 @@ def agents_markdown(prog: str | None = None) -> str:
         "   - Inside that single block, you can run **as many commands, file reads, scripts, and checks as needed** — batch related steps into one block instead of splitting them across multiple turns.",
         f"   - The closing fence of the `{cmd}` block must be the **very last line of your reply** — output **zero trailing text or characters** after it and stop generating immediately.",
         "2. **COLUMN-0 FENCES & SEPARATE-LINE HEREDOC TERMINATOR:**",
-        "   - Leave an **empty line** immediately before the opening `bash` fence.",
-        f"   - Start the opening `bash` fence, `{cmd} ... <<'{rb}'`, `{rb}`, and the closing fence at **column 0** (no leading spaces, no list indentation, no `>` blockquotes).",
-        f"   - `{rb}` (or `{rf}`) must be on its **own line**, and the closing fence must be on the **next line** (never concatenate `{rb}` and the closing fence on the same line).",
+        f"   - Leave an **empty line** immediately before the opening `{fence_lang}` fence.",
+        (
+            f"   - Start the opening `powershell` fence, `@'`, `'@ | {cmd} ...`, and the closing fence at **column 0** (no leading spaces, no list indentation, no `>` blockquotes)."
+            if is_ps
+            else f"   - Start the opening `bash` fence, `{cmd} ... <<'{rb}'`, `{rb}`, and the closing fence at **column 0** (no leading spaces, no list indentation, no `>` blockquotes)."
+        ),
+        (
+            f"   - `'@ | {cmd} ...` must be on its **own line**, and the closing fence must be on the **next line**."
+            if is_ps
+            else f"   - `{rb}` (or `{rf}`) must be on its **own line**, and the closing fence must be on the **next line** (never concatenate `{rb}` and the closing fence on the same line)."
+        ),
         f"   - If you include any other code blocks earlier in your explanation, make sure their closing fences are properly closed before the `{cmd}` block starts.",
         "3. **NO INNER TRIPLE BACKTICKS OR HEREDOC DELIMITERS (NEVER BREAK THE FENCE):**",
         "   - **Never** write three consecutive backticks anywhere inside the script body (not in strings, comments, or nested heredocs) — that prematurely closes the Markdown code block in the chat UI and truncates the script!",
-        f"   - **Never** write literal `{rb}` or `{rf}` on its own line inside the script body — bash will terminate the outer heredoc early!",
+        (
+            "   - **Never** write literal `'@` at column 0 inside the script body — PowerShell will terminate the outer here-string early!"
+            if is_ps
+            else f"   - **Never** write literal `{rb}` or `{rf}` on its own line inside the script body — bash will terminate the outer heredoc early!"
+        ),
         "   - If your script needs triple backticks or heredoc markers (e.g. when generating Markdown files or tests), build them dynamically:",
         f"     - **Python:** `F3 = chr(96) * 3`, `RB = 'RUN_' + 'BLOCK'`",
         "     - **Bash:** `F3=$(printf '\\140\\140\\140')`, `RB='RUN_'\"BLOCK\"`",
@@ -303,22 +391,15 @@ def agents_markdown(prog: str | None = None) -> str:
         "",
         "- **Standard block:** Use `Next block: <session>/<step>` from the session header (e.g. `s1/1`), then increment the step sequentially (`s1/2`, `s1/3`, ...) after each `[<session>/<step>]` result.",
         "- **No step reuse:** Every executed block consumes its step number, even if it fails. Never reuse or skip a step number.",
-        "- **Isolated shell:** Each block runs in a fresh `bash` process starting in `Workdir` (`cd` and shell variables do not persist across blocks).",
-        f"- **Unknown session only:** Only if the chat started without a `Session:` / `Next block:` header, omit `<session>/<step>` on the first block (`{cmd} <<'{rb}'`). Never guess `s1/1`.",
+        f"- **Isolated shell:** Each block runs in a fresh `{shell_label}` process starting in `Workdir` (`cd` and shell variables do not persist across blocks).",
+        f"- **Unknown session only:** Only if the chat started without a `Session:` / `Next block:` header, omit `<session>/<step>` on the first block ({first_block_ex}). Never guess `s1/1`.",
         f"- **Focused task handoff:** To build a new session context bundle (`0.txt`) for a focused task chat, run `{cmd} --start -p \"<task prompt>\" [file ...]`.",
         "",
         "### Fixing a Failed Block (`--fix <session>/<target>`)",
         "",
         "When a long block fails on a small typo and re-running from scratch is safe (idempotent), patch the previous script via Python (`text` holds the target block's script) instead of rewriting the whole block:",
         "",
-        f"{f3}bash",
-        f"{cmd} --fix s1/1 <<'{rf}'",
-        "old = 'wrong_command'",
-        "new = 'right_command'",
-        "assert text.count(old) == 1",
-        "text = text.replace(old, new, 1)",
-        f"{rf}",
-        f"{f3}",
+        *fix_block,
         "",
         "If the failed run already partially changed state and is not idempotent, use the next sequential step (`s1/2`) instead of `--fix`.",
     ])
@@ -444,6 +525,71 @@ RISK_RULES: list[tuple[str, str, re.Pattern[str]]] = [
         ),
     ),
 ]
+
+
+def get_active_risk_rules() -> list[tuple[str, str, re.Pattern[str]]]:
+    cfg = parse_config_file()
+    raw_dis, _ = get_setting("safety_disable")
+    disabled: set[str] = {
+        x.strip().lower()
+        for x in re.split(r"[,\s]+", raw_dis)
+        if x.strip()
+    }
+    custom_map: dict[str, str] = {}
+    for k, v in cfg.items():
+        if k.startswith("safety_rule."):
+            cat = k[len("safety_rule."):].strip().lower()
+            if not cat:
+                continue
+            if v.strip().lower() in ("off", "none", "false", "0", "disable", "disabled"):
+                disabled.add(cat)
+            elif v.strip():
+                custom_map[cat] = v.strip()
+    env_rules = os.environ.get("RUN_BLOCK_SAFETY_RULES", "").strip()
+    if env_rules:
+        for item in env_rules.split(";"):
+            part = item.strip()
+            if not part:
+                continue
+            sep = "=" if "=" in part and (":" not in part or part.index("=") < part.index(":")) else (":" if ":" in part else "")
+            if not sep:
+                continue
+            cat_raw, pat_raw = part.split(sep, 1)
+            cat = cat_raw.strip().lower()
+            pat_str = pat_raw.strip()
+            if not cat:
+                continue
+            if pat_str.lower() in ("off", "none", "false", "0", "disable", "disabled"):
+                disabled.add(cat)
+                custom_map.pop(cat, None)
+            elif pat_str:
+                custom_map[cat] = pat_str
+                disabled.discard(cat)
+
+    active: list[tuple[str, str, re.Pattern[str]]] = []
+    seen_cats: set[str] = set()
+    for cat, desc, pat in RISK_RULES:
+        if cat in disabled:
+            continue
+        if cat in custom_map:
+            try:
+                active.append((cat, desc, re.compile(custom_map[cat])))
+                seen_cats.add(cat)
+                continue
+            except re.error:
+                pass
+        active.append((cat, desc, pat))
+        seen_cats.add(cat)
+
+    for cat, pat_str in custom_map.items():
+        if cat in disabled or cat in seen_cats:
+            continue
+        try:
+            active.append((cat, f"custom safety rule ({cat})", re.compile(pat_str)))
+            seen_cats.add(cat)
+        except re.error:
+            pass
+    return active
 
 PY_HEREDOC_START_RE = re.compile(r"python3?\s+-[^\n]*<<-?['\"]?([A-Za-z0-9_]+)['\"]?")
 
@@ -615,11 +761,12 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
     ):
         if bucket:
             rows.append((label, ", ".join(bucket)))
+    sh_tag = "pwsh" if _is_powershell() else "bash"
     meta = f"{len(non_empty)} line{'s' if len(non_empty) != 1 else ''}"
     if py_blocks:
-        meta += f", bash + {py_blocks} python block{'s' if py_blocks != 1 else ''}"
+        meta += f", {sh_tag} + {py_blocks} python block{'s' if py_blocks != 1 else ''}"
     else:
-        meta += ", bash"
+        meta += f", {sh_tag}"
     return {
         "meta": meta,
         "rows": rows,
@@ -630,6 +777,8 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
 
 
 def scan_script_risks(script_text: str) -> list[dict[str, object]]:
+    active_rules = get_active_risk_rules()
+    active_cats = {cat for cat, _, _ in active_rules}
     findings: list[dict[str, object]] = []
     py_eof_token: str | None = None
     py_buf: list[str] = []
@@ -638,7 +787,11 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
         stripped = raw_line.strip()
         if py_eof_token is not None:
             if stripped == py_eof_token:
-                _analyze_python_ast("\n".join(py_buf), [], [], [], findings, py_start)
+                py_f: list[dict[str, object]] = []
+                _analyze_python_ast("\n".join(py_buf), [], [], [], py_f, py_start)
+                for pf in py_f:
+                    if str(pf.get("category")) in active_cats:
+                        findings.append(pf)
                 py_eof_token = None
                 py_buf = []
             else:
@@ -653,7 +806,7 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
             py_buf = []
             py_start = idx
             continue
-        for category, desc, pat in RISK_RULES:
+        for category, desc, pat in active_rules:
             if pat.search(stripped):
                 clean_snip = re.sub(r"\s+", " ", stripped).replace("│", "|")
                 findings.append(
@@ -1039,7 +1192,7 @@ def resolve_initial_session(base: Path) -> str:
     if candidates:
         candidates.sort(key=lambda item: item[0])
         _, latest_dir = candidates[-1]
-        has_blocks = any(latest_dir.glob("*.sh")) or (latest_dir / "1.txt").exists() or (latest_dir / "1.aborted").exists()
+        has_blocks = bool(_iter_session_scripts(latest_dir)) or (latest_dir / "1.txt").exists() or (latest_dir / "1.aborted").exists()
         if not has_blocks:
             return latest_dir.name
     return next_session_name(base)
@@ -1182,10 +1335,23 @@ def run_script(
 ) -> int:
     work_dir = get_work_dir(script_path.parent)
     shell_bin, _ = get_setting("shell")
+    is_ps = _is_powershell(shell_bin)
     script_text = script_path.read_text(encoding="utf-8")
 
+    if is_ps:
+        ps_check = (
+            "$err = $null; "
+            "[void][System.Management.Automation.Language.Parser]::ParseFile($args[0], [ref]$null, [ref]$err); "
+            "if ($err) { foreach ($e in $err) { [Console]::Error.WriteLine($e.ToString()) }; exit 1 }"
+        )
+        chk_cmd = [shell_bin, "-NoProfile", "-NonInteractive", "-Command", ps_check, str(script_path)]
+        exec_cmd = [shell_bin, "-NoProfile", "-File", str(script_path)]
+    else:
+        chk_cmd = [shell_bin, "-n", str(script_path)]
+        exec_cmd = [shell_bin, str(script_path)]
+
     chk = subprocess.run(
-        [shell_bin, "-n", str(script_path)],
+        chk_cmd,
         cwd=work_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -1247,7 +1413,7 @@ def run_script(
     if master_fd is not None and slave_fd is not None:
         try:
             proc = subprocess.Popen(
-                [shell_bin, str(script_path)],
+                exec_cmd,
                 cwd=work_dir,
                 stdin=tty_in if tty_in is not None else slave_fd,
                 stdout=slave_fd,
@@ -1278,7 +1444,7 @@ def run_script(
                 tty_in.close()
     else:
         proc = subprocess.Popen(
-            [shell_bin, str(script_path)],
+            exec_cmd,
             cwd=work_dir,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -1531,7 +1697,7 @@ def cmd_normal(ref: str, payload: str) -> int:
     sdir = ensure_base() / session
     sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
     label = f"{session}/{step}"
-    script_path = sdir / f"{step}.sh"
+    script_path = _find_step_script(sdir, step)
     out_path = sdir / f"{step}.txt"
 
     aborted_marker = script_path.with_suffix(".aborted")
@@ -1553,7 +1719,7 @@ def cmd_normal(ref: str, payload: str) -> int:
                 out_path.unlink(missing_ok=True)
         if not overwrite:
             return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: step already exists — output: {out_path}")
-    if step_num > 1 and not (sdir / f"{step_num - 1}.sh").exists():
+    if step_num > 1 and not _find_step_script(sdir, str(step_num - 1)).exists():
         prev_label = f"{session}/{step_num - 1}"
         allow_skip = False
         if sys.stdout.isatty() and not no_clipboard():
@@ -1583,11 +1749,12 @@ def cmd_normal(ref: str, payload: str) -> int:
 def cmd_fix(ref: str, fix_code: str) -> int:
     session, target = parse_ref(ref, allow_fix_step=True)
     sdir = ensure_base() / session
-    src_script = sdir / f"{target}.sh"
+    src_script = _find_step_script(sdir, target)
+    ext = src_script.suffix or _script_ext()
     new_step = next_fix_step(target)
     label = f"{session}/{new_step}"
     fix_path = sdir / f"{new_step}.fix"
-    script_path = sdir / f"{new_step}.sh"
+    script_path = sdir / f"{new_step}{ext}"
     out_path = sdir / f"{new_step}.txt"
 
     if not src_script.exists():
@@ -1623,11 +1790,11 @@ def cmd_fix(ref: str, fix_code: str) -> int:
         difflib.unified_diff(
             orig_text.splitlines(keepends=True),
             new_text.splitlines(keepends=True),
-            fromfile=f"{target}.sh",
-            tofile=f"{new_step}.sh",
+            fromfile=f"{target}{ext}",
+            tofile=f"{new_step}{ext}",
         )
     )
-    header = [f"[{label}] patched {target}.sh -> {new_step}.sh:\n", diff]
+    header = [f"[{label}] patched {target}{ext} -> {new_step}{ext}:\n", diff]
     return run_script(label, script_path, out_path, header_lines=header, cleanup_on_abort=[fix_path, script_path])
 
 
@@ -1664,7 +1831,7 @@ def _find_latest_step(session: str | None = None) -> tuple[str, str]:
             reverse=True,
         )
     for sdir in sdirs:
-        scripts = sorted([p.stem for p in sdir.glob("*.sh")], key=_step_sort_key)
+        scripts = [p.stem for p in _iter_session_scripts(sdir)]
         if scripts:
             return sdir.name, scripts[-1]
     raise SystemExit(f"{prog_name()}: no saved blocks found in {base}")
@@ -1705,16 +1872,15 @@ def find_start_file(work_dir: Path) -> tuple[Path | None, Path]:
     cwd = Path.cwd().resolve()
     wdir = work_dir.resolve()
     # Walk from cwd up to work_dir (if cwd is inside work_dir)
-    cur = cwd
-    while True:
-        candidate = cur / START_FILE_NAME
-        if candidate.is_file():
-            return candidate, cur
-        if cur == wdir or cur.parent == cur:
-            break
-        if wdir not in cur.parents:
-            break
-        cur = cur.parent
+    if cwd == wdir or wdir in cwd.parents:
+        cur = cwd
+        while True:
+            candidate = cur / START_FILE_NAME
+            if candidate.is_file():
+                return candidate, cur
+            if cur == wdir or cur.parent == cur:
+                break
+            cur = cur.parent
     wdir_candidate = wdir / START_FILE_NAME
     if wdir_candidate.is_file():
         return wdir_candidate, wdir
@@ -1760,14 +1926,21 @@ def _run_start_command(cmd_str: str, cwd: Path) -> tuple[int, str]:
     # If the command invokes '<prog> --agents' directly, call our own agents_markdown() in-process
     if re.fullmatch(rf"{re.escape(prog)}\s+--agents(?:-md)?", cmd_str) or re.fullmatch(r"run_block\s+--agents(?:-md)?", cmd_str):
         return 0, agents_markdown(prog)
+    if re.match(rf"^(?:{re.escape(prog)}|run_block)\s+--tree(?:\s+.*)?$", cmd_str):
+        try:
+            parts = shlex.split(cmd_str)[2:]
+            return 0, _tree_from_args(parts, default_dir=cwd).rstrip()
+        except SystemExit as exc:
+            return 1, str(exc)
     shell_bin, _ = get_setting("shell")
+    shell_args = [shell_bin, "-NoProfile", "-Command", cmd_str] if _is_powershell(shell_bin) else [shell_bin, "-c", cmd_str]
     env = {**os.environ, "IN_RUN_BLOCK": "1", "PYTHONUTF8": "1"}
     # Ensure the directory containing this script is on PATH
     script_dir = str(Path(self_path).parent)
     env["PATH"] = f"{script_dir}{os.pathsep}{env.get('PATH', '')}"
     try:
         r = subprocess.run(
-            [shell_bin, "-c", cmd_str],
+            shell_args,
             cwd=str(cwd),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -1947,7 +2120,7 @@ def cmd_list(session: str | None = None) -> int:
             return 0
         sys.stdout.write(f"Sessions in {base}:\n")
         for sdir in sdirs:
-            scripts = sorted([p.stem for p in sdir.glob("*.sh")], key=_step_sort_key)
+            scripts = [p.stem for p in _iter_session_scripts(sdir)]
             has_bundle = (sdir / "0.txt").is_file()
             if scripts:
                 last = f"{sdir.name}/{scripts[-1]} ({_step_status(sdir, scripts[-1])})"
@@ -1967,10 +2140,11 @@ def cmd_list(session: str | None = None) -> int:
     if (sdir / "0.txt").is_file():
         ref0 = f"{session}/0"
         sys.stdout.write(f"  {ref0:<10}  {'BUNDLE':<24}  Session context bundle (0.txt)\n")
-    scripts = sorted([p.stem for p in sdir.glob("*.sh")], key=_step_sort_key)
-    for stem in scripts[-15:]:
+    script_paths = _iter_session_scripts(sdir)
+    for sp in script_paths[-15:]:
+        stem = sp.stem
         st = _step_status(sdir, stem)
-        sh_text = (sdir / f"{stem}.sh").read_text(encoding="utf-8", errors="replace")
+        sh_text = sp.read_text(encoding="utf-8", errors="replace")
         summary = summarize_script_actions(sh_text)
         rows = summary.get("rows") or []
         desc = "; ".join(f"{k}: {v}" for k, v in rows[:2]) if rows else ""
@@ -1987,7 +2161,7 @@ def cmd_show(ref: str | None = None) -> int:
     else:
         session, step = _find_latest_step()
     sdir = ensure_base() / session
-    script_path = sdir / f"{step}.sh"
+    script_path = _find_step_script(sdir, step)
     out_path = sdir / f"{step}.txt"
     if step == "0" and out_path.is_file():
         sys.stdout.write(f"=== [{session}/0] Bundle: {out_path} ===\n")
@@ -2009,13 +2183,336 @@ def cmd_retry(ref: str | None = None) -> int:
     else:
         session, step = _find_latest_step()
     sdir = ensure_base() / session
-    script_path = sdir / f"{step}.sh"
+    script_path = _find_step_script(sdir, step)
     out_path = sdir / f"{step}.txt"
     if not script_path.is_file():
         raise SystemExit(f"{prog_name()}: block {session}/{step} not found ({script_path})")
     out_path.unlink(missing_ok=True)
     (sdir / f"{step}.aborted").unlink(missing_ok=True)
     return run_script(f"{session}/{step}", script_path, out_path, cleanup_on_abort=[])
+
+
+def _dir_size_bytes(path: Path) -> int:
+    total = 0
+    try:
+        for p in path.rglob("*"):
+            if p.is_file():
+                try:
+                    total += p.stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def cmd_clean(argv: list[str]) -> int:
+    prog = prog_name()
+    keep = 5
+    clean_all = False
+    yes = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--all":
+            clean_all = True
+            keep = 0
+            i += 1
+        elif a in ("-y", "--yes", "--force"):
+            yes = True
+            i += 1
+        elif a == "--keep":
+            if i + 1 >= len(argv):
+                raise SystemExit(f"{prog}: --keep requires a non-negative integer")
+            try:
+                keep = int(argv[i + 1])
+            except ValueError:
+                raise SystemExit(f"{prog}: invalid --keep value: {argv[i + 1]!r}")
+            if keep < 0:
+                raise SystemExit(f"{prog}: --keep must be >= 0")
+            i += 2
+        elif a.startswith("--keep="):
+            val_s = a.split("=", 1)[1]
+            try:
+                keep = int(val_s)
+            except ValueError:
+                raise SystemExit(f"{prog}: invalid --keep value: {val_s!r}")
+            if keep < 0:
+                raise SystemExit(f"{prog}: --keep must be >= 0")
+            i += 1
+        else:
+            raise SystemExit(f"{prog}: usage: {prog} --clean [--keep N | --all] [--yes]")
+
+    base = ensure_base()
+    sdirs = sorted(
+        [p for p in base.iterdir() if p.is_dir()],
+        key=lambda p: (p.stat().st_mtime, p.name),
+    )
+    if clean_all or keep == 0:
+        to_remove = sdirs
+    elif len(sdirs) > keep:
+        to_remove = sdirs[: len(sdirs) - keep]
+    else:
+        to_remove = []
+
+    if not to_remove:
+        sys.stdout.write(f"Nothing to clean in {base} ({len(sdirs)} session(s) kept).\n")
+        return 0
+
+    freed_bytes = sum(_dir_size_bytes(d) for d in to_remove)
+    names = ", ".join(d.name for d in to_remove)
+    if not yes and sys.stdin.isatty() and sys.stdout.isatty() and not no_clipboard():
+        ok = prompt_yes_no_box(
+            "[CLEAN] [!] PRUNE SESSIONS",
+            [
+                f"Directory: {base}",
+                f"Sessions to remove ({len(to_remove)}): {names}",
+                f"Disk space to free: {freed_bytes:,} bytes",
+            ],
+            f"Delete {len(to_remove)} session(s)?",
+            default_yes=False,
+            yes_status=f"✓ Removing {len(to_remove)} session(s).",
+            no_status="✗ Clean canceled.",
+        )
+        if not ok:
+            return 2
+
+    for d in to_remove:
+        shutil.rmtree(d, ignore_errors=True)
+    kept = len(sdirs) - len(to_remove)
+    sys.stdout.write(
+        f"Cleaned {len(to_remove)} session(s) ({names}; {freed_bytes:,} bytes freed) from {base}; {kept} kept.\n"
+    )
+    return 0
+
+
+_TREE_SKIP_DIRS = {
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "target",
+}
+
+
+def _collect_repo_files(root: Path) -> list[str]:
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if r.returncode == 0:
+            files = []
+            for raw in r.stdout.splitlines():
+                rel = raw.strip()
+                if not rel:
+                    continue
+                p = root / rel
+                if p.is_file() and not p.is_symlink():
+                    files.append(Path(rel).as_posix())
+            return sorted(set(files))
+    except Exception:
+        pass
+
+    files = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            d for d in dirnames if d not in _TREE_SKIP_DIRS and not d.startswith(".git")
+        )
+        rel_dir = Path(dirpath).relative_to(root)
+        for fn in sorted(filenames):
+            p = Path(dirpath) / fn
+            if p.is_file() and not p.is_symlink():
+                rel_p = (rel_dir / fn).as_posix() if str(rel_dir) != "." else fn
+                files.append(rel_p)
+    return sorted(set(files))
+
+
+def _inspect_file_meta(path: Path) -> tuple[int, bool, int]:
+    """Returns (lines, is_binary, byte_size)."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            head = f.read(4096)
+            if b"\x00" in head:
+                return 0, True, size
+            rest = f.read(512 * 1024)
+        data = head + rest
+        n_lines = data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+        return n_lines, False, size
+    except OSError:
+        return 0, False, 0
+
+
+def build_repo_tree(
+    root_dir: Path | None = None,
+    max_lines: int = 120,
+    max_tokens: int = 1200,
+) -> str:
+    root = (root_dir if root_dir is not None else get_work_dir()).resolve()
+    rel_files = _collect_repo_files(root)
+    file_info: dict[str, tuple[int, bool, int]] = {}
+    dir_files: dict[str, list[str]] = {"": []}
+    dir_Subdirs: dict[str, list[str]] = {"": []}
+    all_dirs: set[str] = {""}
+
+    for rel in rel_files:
+        info = _inspect_file_meta(root / rel)
+        file_info[rel] = info
+        parts = rel.split("/")
+        cur = ""
+        for part in parts[:-1]:
+            nxt = f"{cur}/{part}" if cur else part
+            if nxt not in all_dirs:
+                all_dirs.add(nxt)
+                dir_files[nxt] = []
+                dir_Subdirs[nxt] = []
+                dir_Subdirs[cur].append(nxt)
+            cur = nxt
+        dir_files[cur].append(rel)
+
+    for d in all_dirs:
+        dir_Subdirs[d].sort()
+        dir_files[d].sort()
+
+    dir_totals: dict[str, tuple[int, int]] = {}
+    for d in sorted(all_dirs, key=lambda x: (0 if not x else x.count("/") + 1), reverse=True):
+        f_cnt = len(dir_files[d])
+        l_cnt = sum(file_info[f][0] for f in dir_files[d])
+        for sub in dir_Subdirs[d]:
+            sf, sl = dir_totals[sub]
+            f_cnt += sf
+            l_cnt += sl
+        dir_totals[d] = (f_cnt, l_cnt)
+
+    def render_dir(d: str, prefix: str, collapsed: set[str], root_file_limit: int | None) -> list[str]:
+        out: list[str] = []
+        subs = dir_Subdirs[d]
+        files = dir_files[d]
+        extra_files = 0
+        if d == "" and root_file_limit is not None and len(files) > root_file_limit:
+            extra_files = len(files) - root_file_limit
+            files = files[:root_file_limit]
+
+        entries: list[tuple[str, str]] = [("dir", s) for s in subs] + [("file", f) for f in files]
+        if extra_files > 0:
+            entries.append(("more", f"... (+{extra_files} more files)"))
+
+        for idx, (kind, item) in enumerate(entries):
+            is_last = idx == len(entries) - 1
+            conn = "└── " if is_last else "├── "
+            child_prefix = prefix + ("    " if is_last else "│   ")
+            if kind == "dir":
+                name = item.rsplit("/", 1)[-1]
+                if item in collapsed:
+                    fc, lc = dir_totals[item]
+                    out.append(f"{prefix}{conn}{name}/ ({fc} file{'s' if fc != 1 else ''}, {lc:,}L)")
+                else:
+                    out.append(f"{prefix}{conn}{name}/")
+                    out.extend(render_dir(item, child_prefix, collapsed, None))
+            elif kind == "file":
+                name = item.rsplit("/", 1)[-1]
+                lines_n, is_bin, sz = file_info[item]
+                tag = f"({sz:,}B)" if is_bin else f"({lines_n}L)"
+                out.append(f"{prefix}{conn}{name} {tag}")
+            else:
+                out.append(f"{prefix}{conn}{item}")
+        return out
+
+    collapsed: set[str] = set()
+    root_limit: int | None = None
+    total_f, total_l = dir_totals[""]
+
+    while True:
+        body = [f"{root.name}/"] + render_dir("", "", collapsed, root_limit)
+        footer = f"# Total: {total_f} file{'s' if total_f != 1 else ''}, {total_l:,} lines"
+        full_lines = body + [footer]
+        tok = int(count_tokens("\n".join(full_lines).encode("utf-8"))["gpt"])
+        if len(full_lines) <= max_lines and tok <= max_tokens:
+            return "\n".join(full_lines) + "\n"
+
+        candidates = [
+            d for d in all_dirs
+            if d != "" and d not in collapsed and not any(
+                d.startswith(c + "/") for c in collapsed
+            ) and dir_totals[d][0] > 1
+        ]
+        if candidates:
+            # Collapse the deepest directory with the most files first
+            best = max(candidates, key=lambda d: (d.count("/"), dir_totals[d][0]))
+            collapsed.add(best)
+            continue
+
+        cur_root_files = len(dir_files[""]) if root_limit is None else root_limit
+        if cur_root_files > 5:
+            root_limit = max(5, cur_root_files // 2)
+            continue
+        return "\n".join(full_lines[: max(2, max_lines - 1)] + [footer]) + "\n"
+
+
+def _tree_from_args(argv: list[str], default_dir: Path | None = None) -> str:
+    prog = prog_name()
+    max_lines = 120
+    max_tokens = 1200
+    target_dir: Path | None = default_dir
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--max-lines":
+            if i + 1 >= len(argv):
+                raise SystemExit(f"{prog}: --max-lines requires an integer")
+            try:
+                max_lines = max(5, int(argv[i + 1]))
+            except ValueError:
+                raise SystemExit(f"{prog}: invalid --max-lines value: {argv[i + 1]!r}")
+            i += 2
+        elif a.startswith("--max-lines="):
+            try:
+                max_lines = max(5, int(a.split("=", 1)[1]))
+            except ValueError:
+                raise SystemExit(f"{prog}: invalid --max-lines value: {a!r}")
+            i += 1
+        elif a == "--max-tokens":
+            if i + 1 >= len(argv):
+                raise SystemExit(f"{prog}: --max-tokens requires an integer")
+            try:
+                max_tokens = max(20, int(argv[i + 1]))
+            except ValueError:
+                raise SystemExit(f"{prog}: invalid --max-tokens value: {argv[i + 1]!r}")
+            i += 2
+        elif a.startswith("--max-tokens="):
+            try:
+                max_tokens = max(20, int(a.split("=", 1)[1]))
+            except ValueError:
+                raise SystemExit(f"{prog}: invalid --max-tokens value: {a!r}")
+            i += 1
+        elif a.startswith("-"):
+            raise SystemExit(f"{prog}: usage: {prog} --tree [DIR] [--max-lines N] [--max-tokens N]")
+        else:
+            p = Path(a).expanduser()
+            if default_dir is not None and not p.is_absolute():
+                p = default_dir / p
+            if not p.is_dir():
+                raise SystemExit(f"{prog}: directory not found: {a}")
+            target_dir = p
+            i += 1
+    return build_repo_tree(root_dir=target_dir, max_lines=max_lines, max_tokens=max_tokens)
+
+
+def cmd_tree(argv: list[str]) -> int:
+    sys.stdout.write(_tree_from_args(argv))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2072,6 +2569,12 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"{prog}: usage: {prog} --update [--force]")
         return cmd_update(force=force)
 
+    if args[0] == "--clean":
+        return cmd_clean(args[1:])
+
+    if args[0] == "--tree":
+        return cmd_tree(args[1:])
+
     if args[0] == "--start":
         return cmd_start(args[1:])
 
@@ -2082,7 +2585,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if len(args) != 1 or args[0].startswith("-"):
         raise SystemExit(
-            f"{prog}: usage: {prog} [<session>/<step>] (or --fix / --retry / --list / --show / --start / --init-start / --config / --agents / --update / --version / --help)"
+            f"{prog}: usage: {prog} [<session>/<step>] (or --fix / --retry / --list / --show / --clean / --tree / --start / --init-start / --config / --agents / --update / --version / --help)"
         )
     return cmd_normal(args[0], sys.stdin.read())
 

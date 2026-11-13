@@ -26,8 +26,8 @@ if (-not (Get-Command python3 -ErrorAction SilentlyContinue) -and -not (Get-Comm
     Write-Error 'Python 3 is required but was not found in PATH.'
     exit 1
 }
-if (-not (Get-Command bash -ErrorAction SilentlyContinue)) {
-    Write-Error 'bash (e.g. Git Bash or WSL) is required but was not found in PATH.'
+if (-not (Get-Command bash -ErrorAction SilentlyContinue) -and -not (Get-Command pwsh -ErrorAction SilentlyContinue) -and -not (Get-Command powershell -ErrorAction SilentlyContinue)) {
+    Write-Error 'bash or PowerShell (pwsh) is required but was not found in PATH.'
     exit 1
 }
 

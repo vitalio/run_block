@@ -89,9 +89,11 @@ Run `run_block --init-config` to create `~/.config/run_block/config` or `run_blo
 | `work_dir` | `RUN_BLOCK_CWD` | `auto` | `auto` (Git root or `$PWD`), `cwd` (always `$PWD`), or explicit path |
 | `clipboard` | `RUN_BLOCK_CLIPBOARD` | `prompt` | `prompt` (`Enter`/`Esc` box), `auto` (copy automatically), `never` |
 | `token_stats` | `RUN_BLOCK_TOKEN_STATS` | `true` | Show byte size and Claude/GPT/Gemini token counts (`true` / `false`) |
-| `shell` | `RUN_BLOCK_SHELL` | `bash` | Shell binary used for `bash -n` syntax check and execution |
+| `shell` | `RUN_BLOCK_SHELL` | `bash` | Shell binary (`bash`, `sh`, or `pwsh`/`powershell` on Windows) |
 | `editor` | `RUN_BLOCK_EDITOR` | `auto` | Terminal editor/viewer for `v` in `BLOCK PLAN` (`auto`, `nano`, `vim`, `less`) |
 | `block_lang` | `RUN_BLOCK_LANG` | `English` | Language required inside blocks in `--agents` (`English`, or `none` to omit) |
+| `safety_disable` | `RUN_BLOCK_SAFETY_DISABLE` | *(none)* | Comma-separated built-in risk categories to disable |
+| `safety_rule.<cat>` | `RUN_BLOCK_SAFETY_RULES` | *(none)* | Custom regex rule (or override) for risk category `<cat>` |
 
 ## CLI Reference
 
@@ -102,6 +104,8 @@ Run `run_block --init-config` to create `~/.config/run_block/config` or `run_blo
 | `run_block --retry [session/step]` | Re-run the last (or specified) block |
 | `run_block --list`, `-l [session]` | List sessions and blocks with their status and summary |
 | `run_block --show [session/step]` | Show saved script and output of a block (or `<session>/0` bundle) |
+| `run_block --clean [--keep N \| --all]` | Prune old session directories in `/tmp/run_block` (default: `--keep 5`) |
+| `run_block --tree [DIR] [options]` | Print token-budgeted repository file tree (`--max-lines N`, `--max-tokens N`) |
 | `run_block --start [options] [FILE ..]` | Build `<session>/0.txt` context bundle from `.run_block.start` |
 | `run_block --init-start [--force]` | Create a starter `.run_block.start` in the current directory |
 | `run_block --agents` | Print Markdown instructions for AI agents |
