@@ -8,11 +8,9 @@ Task heading format: `### <emoji> [<STATUS>] <ID>: <title>`
 
 ## Resume
 
-Written 2026-11-14. Released `run_block` `v0.14.0` (`412de9c`):
-- Removed file-based configuration (`~/.config/run_block/config`, `--config`, `--init-config`) in favor of zero-config defaults and standard environment variables (`VISUAL`/`EDITOR`, `RUN_BLOCK_*`).
-- Added `run_block --plan` to analyze scripts from `stdin` and emit structured JSON execution and safety plans to `stdout`.
-- Added `-y`/`--yes` (`RUN_BLOCK_HEADLESS=1`) non-interactive headless mode for raw `stdout` protocol execution without `/dev/tty` boxes.
-- Added `RUN_BLOCK_APPROVE_CMD` pre-execution validator hook receiving `--plan` JSON on `stdin` (`0`=auto-approve, `2`=prompt user with analyzer note in `BLOCK PLAN`, other=reject).
-- Updated `run_block --agents` fence safety rules to prefer targeted `text.replace` patches over whole-file Markdown rewrites.
+Written 2026-11-14. Released `run_block` `v0.15.0` (`1ce929c`):
+- Made `agents_bundle | run_block` (no arguments with piped `stdin`) initialize a new session bundle (`<session>/0.txt`), removing implicit sessionless block execution.
+- Refined TUI box headers to `<label> · <TITLE>`, removed the redundant `START` box in favor of `✓ Running <script> ...` in `BLOCK PLAN`, added blank line spacing between directory groups in `Operations:`, and unified the `[python]` operation tag.
+- Replaced duplicate release instructions in `AGENTS.md` with module boundary documentation.
 
 ## Tasks
