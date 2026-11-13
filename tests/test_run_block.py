@@ -128,10 +128,10 @@ class TestRunBlock(unittest.TestCase):
         r_md = subprocess.run([str(SCRIPT), "--agents"], capture_output=True, text=True, check=False)
         self.assertEqual(r_md.returncode, 0)
         self.assertIn(f"## Terminal blocks (`run_block` v{self.mod.VERSION})", r_md.stdout)
-        self.assertIn("CRITICAL — STRICT BLOCK GENERATION & LAYOUT RULES", r_md.stdout)
-        self.assertIn("ONE BLOCK PER MESSAGE", r_md.stdout)
+        self.assertIn("CRITICAL — STRICT LAYOUT & MARKDOWN FENCE RULES", r_md.stdout)
+        self.assertIn("ONE BLOCK PER MESSAGE, ALWAYS AT THE VERY END (BATCH COMMANDS INSIDE IT)", r_md.stdout)
+        self.assertIn("run_block s1/1 <<'RUN_BLOCK'", r_md.stdout)
         self.assertIn("run_block <<'RUN_BLOCK'", r_md.stdout)
-        self.assertIn("run_block s1/2 <<'RUN_BLOCK'", r_md.stdout)
         self.assertNotIn("/tmp/", r_md.stdout)
 
         custom_bin = self.tmp / "run_term_block"
@@ -141,8 +141,8 @@ class TestRunBlock(unittest.TestCase):
         rc_md = subprocess.run([str(custom_bin), "--agents"], capture_output=True, text=True, env=env, check=False)
         self.assertEqual(rc_md.returncode, 0)
         self.assertIn("## Terminal blocks (`run_term_block`", rc_md.stdout)
+        self.assertIn("run_term_block s1/1 <<'RUN_BLOCK'", rc_md.stdout)
         self.assertIn("run_term_block <<'RUN_BLOCK'", rc_md.stdout)
-        self.assertIn("run_term_block s1/2 <<'RUN_BLOCK'", rc_md.stdout)
     def test_start_autoincrement(self):
         s1 = self.mod.start_session()
         s2 = self.mod.start_session()
@@ -365,6 +365,33 @@ class TestRunBlock(unittest.TestCase):
         )
         self.assertEqual(r_blk.returncode, 0, r_blk.stderr)
         self.assertIn(str(sub.resolve()), r_blk.stdout)
+
+
+    def test_info_and_prompt_boxes_and_skipped_step_confirmation(self):
+        info_box = self.mod.format_info_box("[s1/0] START BUNDLE", ["Session: s1", "Next block: s1/1"])
+        self.assertIn("┌─ [s1/0] START BUNDLE ", info_box)
+        self.assertEqual(len({self.mod.display_width(l) for l in info_box.splitlines()}), 1)
+
+        p_box, iw, _ = self.mod.format_prompt_box(
+            "[s1/2] [!] MISSING PREVIOUS STEP",
+            ["Previous step s1/1 has not been run yet."],
+            "-> Run s1/2 anyway? [y/N]: ",
+        )
+        self.assertIn("MISSING PREVIOUS STEP", p_box)
+        self.assertEqual(len({self.mod.display_width(l) for l in p_box.splitlines()}), 1)
+
+        import io
+        tty_w = io.StringIO()
+        tty_r = io.StringIO("y\n")
+        ok = self.mod.prompt_yes_no_box(
+            "[s1/2] [!] MISSING PREVIOUS STEP",
+            ["Previous step s1/1 has not been run yet."],
+            "Run s1/2 anyway?",
+            default_yes=False,
+            tty_streams=(tty_w, tty_r),
+        )
+        self.assertTrue(ok)
+        self.assertIn("✓ Confirmed by user.", tty_w.getvalue())
 
 if __name__ == "__main__":
     unittest.main()

@@ -51,7 +51,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.6.2"
+VERSION = "0.6.3"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 START_FILE_NAME = ".run_block.start"
@@ -244,65 +244,59 @@ def usage_text() -> str:
 def agents_markdown(prog: str | None = None) -> str:
     cmd = prog or prog_name()
     f3 = chr(96) * 3
+    rb = "RUN_" + "BLOCK"
+    rf = "RUN_" + "FIX"
     lines = [
         f"## Terminal blocks (`{cmd}` v{VERSION})",
         "",
-        f"You have no direct shell access. Run commands by giving the user a `{cmd}` terminal block.",
-        "",
-        "### CRITICAL — STRICT BLOCK GENERATION & LAYOUT RULES",
-        "",
-        f"1. **ONE BLOCK PER MESSAGE (NEVER TWO OR MORE):** Output **at most ONE** `{cmd}` block per reply. Never output multiple `{cmd}` blocks in the same message (not even as \"step 1 / step 2\", alternatives, or illustrative examples). Stop generating immediately after the block and wait for the user to paste its output.",
-        f"2. **MUST BE AT THE VERY END OF YOUR REPLY:** The closing `{f3}` fence of the `{cmd}` block must be the **final line of your message** — **zero trailing text, explanations, or characters** after the closing `{f3}`.",
-        "3. **EXACT MARKDOWN FENCE & HEREDOC FORMAT:**",
-        f"   - Always put an **empty line** immediately before the opening `{f3}bash` fence.",
-        f"   - Start `{f3}bash`, `{cmd} ... <<'RUN_BLOCK'`, `RUN_BLOCK`, and the closing `{f3}` at **column 0** (no leading spaces, no list/blockquote indentation).",
-        f"   - **Never** put literal triple backticks (`{f3}`) or the heredoc delimiter (`RUN_BLOCK` / `RUN_FIX`) inside the script body — this breaks Markdown parsing and heredoc termination (in Python, construct backticks dynamically as `F3 = chr(96) * 3`).",
-        "4. **SEQUENTIAL STEP NUMBERS:** Every launched block consumes its step number, even if it fails. Never reuse a step number or skip ahead.",
-        "",
-        "### 1. First block in a new session (no `<session>/<step>`)",
-        "",
-        "Only when starting a chat where `<session>` is not yet known, omit `<session>/<step>` on the **first** block:",
+        f"You have no direct shell access. To run commands, end your reply with a `{cmd}` Markdown code block in this exact format:",
         "",
         f"{f3}bash",
-        f"{cmd} <<'RUN_BLOCK'",
+        f"{cmd} s1/1 <<'{rb}'",
         "git status -sb",
-        "RUN_BLOCK",
+        f"{rb}",
         f"{f3}",
         "",
-        f"- `{cmd}` initializes a new session (or reuses the session prepared by `{cmd} --start`) and runs `<session>/1`, returning `[<session>/1]` in the output header.",
-        "- Do **not** guess `s1/1` when the session ID is unknown (`s1` may already exist).",
+        "### CRITICAL — STRICT LAYOUT & MARKDOWN FENCE RULES",
         "",
-        "### 2. Subsequent normal blocks (`<session>/<step>`)",
+        "1. **ONE BLOCK PER MESSAGE, ALWAYS AT THE VERY END (BATCH COMMANDS INSIDE IT):**",
+        f"   - Output **at most ONE** `{cmd}` block per reply (never two, never \"step 1 / step 2\").",
+        "   - Inside that single block, you can run **as many commands, file reads, scripts, and checks as needed** — batch related steps into one block instead of splitting them across multiple turns.",
+        f"   - The closing fence of the `{cmd}` block must be the **very last line of your reply** — output **zero trailing text or characters** after it and stop generating immediately.",
+        "2. **COLUMN-0 FENCES & HEREDOC:**",
+        "   - Leave an **empty line** immediately before the opening `bash` fence.",
+        f"   - Start the opening `bash` fence, `{cmd} ... <<'{rb}'`, `{rb}`, and the closing fence at **column 0** (no leading spaces, no list indentation, no `>` blockquotes).",
+        f"   - If you include any other code blocks earlier in your explanation, make sure their closing fences are properly closed before the `{cmd}` block starts.",
+        "3. **NO INNER TRIPLE BACKTICKS OR HEREDOC DELIMITERS (NEVER BREAK THE FENCE):**",
+        "   - **Never** write three consecutive backticks anywhere inside the script body (not in strings, comments, or nested heredocs) — that prematurely closes the Markdown code block in the chat UI and truncates the script!",
+        f"   - **Never** write literal `{rb}` or `{rf}` on its own line inside the script body — bash will terminate the outer heredoc early!",
+        "   - If your script needs triple backticks or heredoc markers (e.g. when generating Markdown files or tests), build them dynamically:",
+        f"     - **Python:** `F3 = chr(96) * 3`, `RB = 'RUN_' + 'BLOCK'`",
+        "     - **Bash:** `F3=$(printf '\\140\\140\\140')`, `RB='RUN_'\"BLOCK\"`",
         "",
-        "Once `<session>` is known (from `Session: <session>` / `Next block: <session>/1` in the start bundle or from `[<session>/1]`), always pass `<session>/<step>` with the next sequential step number (`1`, `2`, `3`, ...):",
+        "### Session & Step Numbering (`<session>/<step>`)",
+        "",
+        "- **Standard block:** Use `Next block: <session>/<step>` from the session header (e.g. `s1/1`), then increment the step sequentially (`s1/2`, `s1/3`, ...) after each `[<session>/<step>]` result.",
+        "- **No step reuse:** Every executed block consumes its step number, even if it fails. Never reuse or skip a step number.",
+        "- **Isolated shell:** Each block runs in a fresh `bash` process starting in `Workdir` (`cd` and shell variables do not persist across blocks).",
+        f"- **Unknown session only:** Only if the chat started without a `Session:` / `Next block:` header, omit `<session>/<step>` on the first block (`{cmd} <<'{rb}'`). Never guess `s1/1`.",
+        "",
+        "### Fixing a Failed Block (`--fix <session>/<target>`)",
+        "",
+        "When a long block fails on a small typo and re-running from scratch is safe (idempotent), patch the previous script via Python (`text` holds the target block's script) instead of rewriting the whole block:",
         "",
         f"{f3}bash",
-        f"{cmd} s1/2 <<'RUN_BLOCK'",
-        "git diff",
-        "RUN_BLOCK",
-        f"{f3}",
-        "",
-        "- Runs in `bash` inside the session `Workdir` (the directory containing `.run_block.start`, or the Git repository root).",
-        "- Step `0` (`0.txt`) is reserved for the session start context bundle; executable blocks always start at `1`.",
-        "",
-        "### 3. Fixing a failed block (`--fix <session>/<target>`)",
-        "",
-        "When a long block fails on a small mistake and re-running is safe, patch the previous script (`text` in Python) instead of regenerating the whole block:",
-        "",
-        f"{f3}bash",
-        f"{cmd} --fix s1/2 <<'RUN_FIX'",
+        f"{cmd} --fix s1/1 <<'{rf}'",
         "old = 'wrong_command'",
         "new = 'right_command'",
         "assert text.count(old) == 1",
         "text = text.replace(old, new, 1)",
-        "RUN_FIX",
+        f"{rf}",
         f"{f3}",
         "",
-        "- Modifies `text` from `<target>` and runs it as `<target>_1` (fixing `2` runs `2_1`; fixing `2_1` runs `2_2`).",
-        "- If the failed run already partially changed state and is not idempotent, use the next normal step (`s1/3`) instead of `--fix`.",
+        "If the failed run already partially changed state and is not idempotent, use the next sequential step (`s1/2`) instead of `--fix`.",
     ]
     return "\n".join(lines)
-
 
 def _git_toplevel_or_cwd() -> Path:
     try:
@@ -680,8 +674,8 @@ def read_clipboard_key(tty_r) -> str:
         if ans in ("v", "view", "e", "edit"):
             return "view"
         return "skip" if ans in ("n", "no", "esc", "\x1b") else "copy"
-    fd = tty_r.fileno()
     try:
+        fd = tty_r.fileno()
         old_attrs = termios.tcgetattr(fd)
     except Exception:
         ans = tty_r.readline().strip().lower()
@@ -791,6 +785,88 @@ def format_safety_box(
     return box, inner_width, cursor_col_offset
 
 
+def format_info_box(title: str, content_lines: list[str], min_width: int = 52) -> str:
+    hdr = title if title.startswith(" ") else f" {title} "
+    inner_width = max(
+        display_width(hdr) + 2,
+        *(display_width(b) for b in content_lines),
+        min_width,
+    )
+    dashes = max(1, inner_width + 2 - display_width(hdr) - 1)
+    top = f"┌─{hdr}{'─' * dashes}┐"
+    bottom = f"└─{'─' * inner_width}─┘"
+    rows = [pad_box_line(b, inner_width) for b in content_lines] or [pad_box_line("", inner_width)]
+    return "\n".join([top, *rows, bottom])
+
+
+def format_prompt_box(
+    title: str,
+    content_lines: list[str],
+    prompt_line: str,
+    min_width: int = 52,
+) -> tuple[str, int, int]:
+    hdr = title if title.startswith(" ") else f" {title} "
+    inner_width = max(
+        display_width(hdr) + 2,
+        display_width(prompt_line) + 3,
+        *(display_width(b) for b in content_lines),
+        min_width,
+    )
+    dashes = max(1, inner_width + 2 - display_width(hdr) - 1)
+    top = f"┌─{hdr}{'─' * dashes}┐"
+    bottom = f"└─{'─' * inner_width}─┘"
+    rows = [pad_box_line(b, inner_width) for b in content_lines]
+    if content_lines:
+        rows.append(pad_box_line("", inner_width))
+    rows.append(pad_box_line(prompt_line, inner_width))
+    box = "\n".join([top, *rows, bottom])
+    cursor_col_offset = 2 + display_width(prompt_line)
+    return box, inner_width, cursor_col_offset
+
+
+def prompt_yes_no_box(
+    title: str,
+    content_lines: list[str],
+    question: str,
+    default_yes: bool = False,
+    yes_status: str = "✓ Confirmed by user.",
+    no_status: str = "✗ Canceled by user.",
+    tty_streams: tuple[object, object] | None = None,
+) -> bool:
+    suffix = "[Y/n]: " if default_yes else "[y/N]: "
+    prompt_line = f"-> {question} {suffix}"
+    box, inner_width, cursor_offset = format_prompt_box(title, content_lines, prompt_line)
+    bottom = f"└─{'─' * inner_width}─┘"
+    try:
+        if tty_streams is not None:
+            tty_w, tty_r = tty_streams
+            close_after = False
+        else:
+            tty_w, tty_r = open_tty()
+            close_after = True
+        try:
+            tty_w.write(f"{box}\r\033[1A\033[{cursor_offset}C")
+            tty_w.flush()
+            while True:
+                action = read_confirm_key(tty_r, default_yes=default_yes)
+                if action == "yes":
+                    approved = True
+                    break
+                if action == "no":
+                    approved = False
+                    break
+            status_line = yes_status if approved else no_status
+            tty_w.write(f"\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
+            tty_w.flush()
+            return approved
+        finally:
+            if close_after:
+                tty_w.close()
+                tty_r.close()
+    except OSError:
+        return default_yes
+
+
 def resolve_editor_command() -> list[str]:
     cfg_ed, _ = get_setting("editor")
     if cfg_ed and cfg_ed.lower() != "auto":
@@ -828,8 +904,8 @@ def read_confirm_key(tty_r, default_yes: bool) -> str:
         if ans in ("n", "no", "q", "esc"):
             return "no"
         return "invalid"
-    fd = tty_r.fileno()
     try:
+        fd = tty_r.fileno()
         old_attrs = termios.tcgetattr(fd)
     except Exception:
         ans = tty_r.readline().strip().lower()
@@ -958,11 +1034,23 @@ def start_session(name: str | None = None, force: bool = False) -> Path:
         if not force:
             if not sys.stdin.isatty():
                 raise SystemExit(f"{prog_name()}: session {sdir} already exists (use --force to overwrite)")
-            sys.stderr.write(f"Session {sdir} already exists. Overwrite? [y/N] ")
-            sys.stderr.flush()
-            ans = sys.stdin.readline().strip().lower()
-            if ans not in ("y", "yes"):
-                raise SystemExit(f"{prog_name()}: aborted")
+            if sys.stdout.isatty() and not no_clipboard():
+                ok = prompt_yes_no_box(
+                    f"[{name}] [!] SESSION ALREADY EXISTS",
+                    [f"Session directory already exists: {sdir}"],
+                    f"Overwrite session {name}?",
+                    default_yes=False,
+                    yes_status=f"✓ Overwriting session {name}.",
+                    no_status=f"✗ Aborted overwriting session {name}.",
+                )
+                if not ok:
+                    raise SystemExit(f"{prog_name()}: aborted")
+            else:
+                sys.stderr.write(f"Session {sdir} already exists. Overwrite? [y/N] ")
+                sys.stderr.flush()
+                ans = sys.stdin.readline().strip().lower()
+                if ans not in ("y", "yes"):
+                    raise SystemExit(f"{prog_name()}: aborted")
         shutil.rmtree(sdir)
     sdir.mkdir(mode=0o700, parents=True)
     return sdir
@@ -1426,29 +1514,38 @@ def cmd_normal(ref: str, payload: str) -> int:
         aborted_marker.unlink(missing_ok=True)
     elif script_path.exists() or out_path.exists():
         if sys.stdout.isatty() and not no_clipboard():
-            try:
-                tty_w, tty_r = open_tty()
-                with tty_w, tty_r:
-                    tty_w.write(
-                        f"[{label}] Step already exists ({script_path}). Overwrite and run? [y/N]: "
-                    )
-                    tty_w.flush()
-                    ans = tty_r.readline().strip().lower()
-                    if ans in ("y", "yes"):
-                        overwrite = True
-                        out_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if prompt_yes_no_box(
+                f"[{label}] [!] STEP ALREADY EXISTS",
+                [f"Step file already exists: {script_path}"],
+                f"Overwrite and re-run {label}?",
+                default_yes=False,
+                yes_status=f"✓ Overwriting {label}.",
+                no_status=f"✗ Keeping existing {label}.",
+            ):
+                overwrite = True
+                out_path.unlink(missing_ok=True)
         if not overwrite:
             return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: step already exists — output: {out_path}")
     if step_num > 1 and not (sdir / f"{step_num - 1}.sh").exists():
-        return not_run_exit(
-            label,
-            sdir,
-            step,
-            out_path,
-            f"[{label}] NOT RUN: previous step {session}/{step_num - 1} has not been run yet",
-        )
+        prev_label = f"{session}/{step_num - 1}"
+        allow_skip = False
+        if sys.stdout.isatty() and not no_clipboard():
+            allow_skip = prompt_yes_no_box(
+                f"[{label}] [!] MISSING PREVIOUS STEP",
+                [f"Previous step {prev_label} has not been run yet."],
+                f"Run {label} anyway?",
+                default_yes=False,
+                yes_status=f"✓ Proceeding with {label} (skipped {prev_label}).",
+                no_status=f"✗ Canceled {label} (run {prev_label} first).",
+            )
+        if not allow_skip:
+            return not_run_exit(
+                label,
+                sdir,
+                step,
+                out_path,
+                f"[{label}] NOT RUN: previous step {prev_label} has not been run yet",
+            )
     if not payload.strip():
         return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: empty script on stdin")
 
@@ -1804,9 +1901,12 @@ def cmd_start(argv: list[str]) -> int:
         prompt_text=prompt_text,
     )
     write_private(bundle_path, str(res["full"]), overwrite=True)
-    sys.stdout.write(str(res["header"]))
-    sys.stdout.write(f"[{session_name}] Total: {res['total_lines']} lines (~{res['total_tokens']} tokens)\n")
-    sys.stdout.write(f"[{session_name}] Bundle: {bundle_path}\n")
+    hdr_lines = str(res["header"]).rstrip("\n").splitlines()
+    if hdr_lines and hdr_lines[0].startswith("# "):
+        hdr_lines = hdr_lines[1:]
+    hdr_lines.append(f"Total: {res['total_lines']} lines (~{res['total_tokens']} tokens)")
+    hdr_lines.append(f"Bundle: {bundle_path}")
+    sys.stdout.write(format_info_box(f"[{session_name}/0] START BUNDLE", hdr_lines) + "\n")
     sys.stdout.flush()
     if not in_run_block():
         offer_clipboard_copy(f"{session_name}/0", bundle_path, ok=True, rc=0)

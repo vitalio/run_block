@@ -8,11 +8,10 @@ Task heading format: `### <emoji> [<STATUS>] <ID>: <title>`
 
 ## Resume
 
-Written 2026-11-13. Released `run_block` `v0.6.2`:
-- Strengthened `run_block --agents` with explicit `CRITICAL — STRICT BLOCK GENERATION & LAYOUT RULES` (strict single-block-per-message rule, end-of-message placement with zero trailing text, column-0 fence/heredoc layout, and no inner triple backticks).
-- Placed `$ run_block --agents` first in `.run_block.start`, `default_start_template()`, and `README.md`.
-- Made `<session>/0.txt` bundle header minimal (`Session`, `Next block`, `Workdir`) while keeping the detailed section/token manifest in console output during `run_block --start`.
-- Unified `Workdir` resolution so that when `.run_block.start` is located in a subdirectory, its directory is used as `Workdir` both for `--start` and for subsequent block executions in the session.
+Written 2026-11-13. Released `run_block` `v0.6.3`:
+- Redesigned `run_block --agents` so the standard `<cmd> s1/1 <<'RUN_BLOCK'` template appears immediately at the top, eliminated nested 4/5-backtick inline escapes from rules, added explicit guidance on batching multiple commands inside a single block, and prohibited literal inner `RUN_BLOCK`/`RUN_FIX` delimiters in addition to triple backticks.
+- Added interactive confirmation (`prompt_yes_no_box`) when a previous step was skipped (`[!] MISSING PREVIOUS STEP`), when a step already exists (`[!] STEP ALREADY EXISTS`), and when a session already exists (`[!] SESSION ALREADY EXISTS`).
+- Framed `run_block --start` console bundle summary in a box (`format_info_box`) matching `BLOCK PLAN` and `END`.
 - Next in queue: `F1` (PowerShell execution mode on Windows), `F2` (custom safety rules in config), `F3` (`--clean` session pruning).
 
 To start a new chat session: run `run_block --start`.
