@@ -1,5 +1,5 @@
 # Description: Bash terminal block execution protocol, fence rules, and mandatory --fix preference
-## Terminal blocks (`{cmd:run_block}` v{version:0.13.1})
+## Terminal blocks (`{cmd:run_block}` v{version:0.13.2})
 
 You have no direct shell access. To run commands, end your reply with a `{cmd:run_block}` Markdown code block in this exact format:
 

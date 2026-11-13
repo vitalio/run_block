@@ -100,11 +100,19 @@ def format_safety_box(
             wline = f"Workdir: {wdir}" + (f"  (cd -> {', '.join(cd_dirs)})" if cd_dirs else "")
             content_lines.extend(textwrap.wrap(wline, width=max_row_len) or [wline])
         ops = list(summary.get("operations") or [])
+        op_groups = list(summary.get("operation_groups") or [])
+        has_subdirs = any(bool(g_dir) for g_dir, _ in op_groups)
         if ops:
             if content_lines:
                 content_lines.append("")
             content_lines.append("Operations:")
-            content_lines.extend(_wrap_labeled_items(ops, max_row_len, indent="  "))
+            if has_subdirs and op_groups:
+                for g_dir, g_items in op_groups:
+                    dir_hdr = g_dir if g_dir else (wdir or ".")
+                    content_lines.append(f"  {dir_hdr}:")
+                    content_lines.extend(_wrap_labeled_items(g_items, max_row_len, indent="    "))
+            else:
+                content_lines.extend(_wrap_labeled_items(ops, max_row_len, indent="  "))
 
     if findings:
         if content_lines:

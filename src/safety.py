@@ -8,10 +8,15 @@ RISK_RULES: list[tuple[str, str, re.Pattern[str]]] = [
         ),
     ),
     (
-        "external-write",
-        "network or remote repository write",
+        "git-push",
+        "push to remote Git repository",
+        re.compile(r"\bgit\s+(?:-C\s+\S+\s+)*push\b"),
+    ),
+    (
+        "net-write",
+        "network or remote file write",
         re.compile(
-            r"(?:\bgit\s+push\b|\b(?:curl|wget)\b[^\n]*(?:-X\s*(?:POST|PUT|DELETE|PATCH)\b|--data\b|--form\b|\s-d\s|\s-F\s)|\b(?:scp|rsync)\s)"
+            r"(?:\b(?:curl|wget)\b[^\n]*(?:-X\s*(?:POST|PUT|DELETE|PATCH)\b|--data\b|--form\b|\s-d\s|\s-F\s)|\b(?:scp|rsync)\s)"
         ),
     ),
     (
@@ -53,6 +58,8 @@ def get_active_risk_rules() -> list[tuple[str, str, re.Pattern[str]]]:
         for x in re.split(r"[,\s]+", raw_dis)
         if x.strip()
     }
+    if "external-write" in disabled:
+        disabled.update(("git-push", "net-write"))
     custom_map: dict[str, str] = {}
     for k, v in cfg.items():
         if k.startswith("safety_rule."):
@@ -201,6 +208,16 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
     exec_cmds: list[str] = []
     cd_dirs: list[str] = []
     operations: list[tuple[str, str]] = []
+    operation_groups: list[tuple[str, list[tuple[str, str]]]] = []
+    cur_group_dir = ""
+
+    def add_op(tag: str, desc: str) -> None:
+        operations.append((tag, desc))
+        if not operation_groups or operation_groups[-1][0] != cur_group_dir:
+            operation_groups.append((cur_group_dir, [(tag, desc)]))
+        else:
+            operation_groups[-1][1].append((tag, desc))
+
     py_blocks = 0
     py_eof: str | None = None
     py_buf: list[str] = []
@@ -231,7 +248,7 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
                 if pe:
                     parts.append("calls: " + ", ".join(pe))
                 desc = f"{len(py_buf)} lines" + (f" — {'; '.join(parts)}" if parts else "")
-                operations.append((f"Python #{py_blocks}", desc))
+                add_op(f"python #{py_blocks}", desc)
                 py_eof = None
                 py_buf = []
             else:
@@ -244,13 +261,13 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
                 if m_redir:
                     target_f = m_redir.group(1).strip("'\"")
                     _add_unique(writes, target_f)
-                    operations.append(("Write/FS", f"{sh_cmd} ({line_lbl})"))
+                    add_op("write", f"{sh_cmd} ({line_lbl})")
                 elif re.match(r"^git\s+", sh_cmd):
                     _add_unique(git_cmds, sh_cmd)
-                    operations.append(("Git", f"{sh_cmd} ({line_lbl})"))
+                    add_op("git", f"{sh_cmd} ({line_lbl})")
                 else:
                     _add_unique(exec_cmds, sh_cmd)
-                    operations.append(("Exec", f"{sh_cmd} ({line_lbl})"))
+                    add_op("exec", f"{sh_cmd} ({line_lbl})")
                 sh_eof = None
                 sh_cmd = ""
                 sh_lines = 0
@@ -279,34 +296,37 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
         m_cd = re.match(r"^cd\s+(.+)$", s)
         if m_cd:
             raw_target = m_cd.group(1).strip().strip('"').strip("'")
+            cur_group_dir = raw_target
             try:
                 resolved_cd = (wdir / os.path.expanduser(raw_target)).resolve()
                 if resolved_cd != wdir.resolve():
                     _add_unique(cd_dirs, m_cd.group(1).strip())
+                else:
+                    cur_group_dir = ""
             except Exception:
                 _add_unique(cd_dirs, m_cd.group(1).strip())
             continue
         if re.match(r"^git\s+", s):
             _add_unique(git_cmds, s)
-            operations.append(("Git", s))
+            add_op("git", s)
             continue
         if re.match(r"^(?:rm|cp|mv|mkdir|chmod|touch)\s+", s):
             _add_unique(writes, s)
-            operations.append(("Write/FS", s))
+            add_op("write", s)
             continue
-        if re.match(r"^(?:cat|grep|ls|head|tail|find|which|command\s+-v|wc|stat|file)\s+", s):
+        if re.match(r"^(?:cat|grep|ls|head|tail|find|which|command\s+-v|wc|stat|file|sed\s+-n)\s+", s):
             _add_unique(reads, s)
-            operations.append(("Read", s))
+            add_op("read", s)
             continue
-        operations.append(("Exec", s))
+        add_op("exec", s)
         _add_unique(exec_cmds, s)
 
     rows: list[tuple[str, str]] = []
     for label, bucket in (
-        ("Write/FS", writes),
-        ("Read", reads),
-        ("Git", git_cmds),
-        ("Exec", exec_cmds),
+        ("write", writes),
+        ("read", reads),
+        ("git", git_cmds),
+        ("exec", exec_cmds),
     ):
         if bucket:
             rows.append((label, ", ".join(bucket)))
@@ -320,6 +340,7 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
         "meta": meta,
         "rows": rows,
         "operations": operations,
+        "operation_groups": operation_groups,
         "cd_dirs": cd_dirs,
         "work_dir": str(wdir),
     }
@@ -334,6 +355,7 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
     py_start = 0
     sh_eof_token: str | None = None
     sh_scan_body: bool = False
+    cur_cd_dir: str = ""
     for idx, raw_line in enumerate(script_text.splitlines(), start=1):
         stripped = raw_line.strip()
         if py_eof_token is not None:
@@ -342,6 +364,8 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
                 _analyze_python_ast("\n".join(py_buf), [], [], [], py_f, py_start)
                 for pf in py_f:
                     if str(pf.get("category")) in active_cats:
+                        if cur_cd_dir:
+                            pf = {**pf, "snippet": f"{pf['snippet']}  (in {cur_cd_dir})"}
                         findings.append(pf)
                 py_eof_token = None
                 py_buf = []
@@ -358,6 +382,10 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
 
         if not stripped or stripped.startswith("#"):
             continue
+        m_cd = re.match(r"^cd\s+(.+)$", stripped)
+        if m_cd:
+            cur_cd_dir = m_cd.group(1).strip().strip('"').strip("'")
+            continue
         m_py = PY_HEREDOC_START_RE.search(stripped)
         if m_py:
             py_eof_token = m_py.group(1)
@@ -372,6 +400,8 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
         for category, desc, pat in active_rules:
             if pat.search(stripped):
                 clean_snip = re.sub(r"\s+", " ", stripped).replace("│", "|")
+                if cur_cd_dir and "-C " not in clean_snip:
+                    clean_snip = f"{clean_snip}  (in {cur_cd_dir})"
                 findings.append(
                     {
                         "line": idx,

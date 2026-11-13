@@ -191,7 +191,7 @@ def default_config_template(prog: str | None = None) -> str:
         "editor = auto",
         "",
         "# Safety scanner customization:",
-        "#   safety_disable = external-write, privilege-system",
+        "#   safety_disable = git-push, net-write, privilege-system",
         "#   safety_rule.<category> = <regex>  (adds a new category or overrides a built-in one)",
         "# safety_disable = ",
         "",

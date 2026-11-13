@@ -115,7 +115,7 @@ class TestRunBlock(unittest.TestCase):
             cats,
             [
                 "git-destructive",
-                "external-write",
+                "git-push",
                 "fs-destructive",
                 "privilege-system",
                 "secrets-exposure",
@@ -413,7 +413,7 @@ class TestRunBlock(unittest.TestCase):
         ])
         findings = self.mod.scan_script_risks(script)
         cats = [f["category"] for f in findings]
-        self.assertNotIn("external-write", cats)
+        self.assertNotIn("git-push", cats)
         self.assertEqual(cats, ["privilege-system", "prod-db"])
 
     def test_clean_sessions_and_build_py_check(self):
@@ -456,9 +456,9 @@ class TestRunBlock(unittest.TestCase):
         summary = rb_mod.summarize_script_actions(script, Path("/tmp"))
         ops = summary["operations"]
         self.assertEqual(len(ops), 2)
-        self.assertEqual(ops[0][0], "Write/FS")
+        self.assertEqual(ops[0][0], "write")
         self.assertIn("cat <<'EOF' > src/example.py (40 lines)", ops[0][1])
-        self.assertEqual(ops[1], ("Git", "git status -sb"))
+        self.assertEqual(ops[1], ("git", "git status -sb"))
 
 
 if __name__ == "__main__":
