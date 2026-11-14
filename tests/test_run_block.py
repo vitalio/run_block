@@ -162,7 +162,9 @@ class TestRunBlock(unittest.TestCase):
         )
         summary = self.mod.summarize_script_actions(script)
         box, _, _ = self.mod.format_safety_box("s1/2", findings, summary=summary)
-        self.assertIn("┌─ s1/2 · BLOCK PLAN ─", box)
+        self.assertIn("┌─ BLOCK PLAN ─", box)
+        self.assertIn("Block: s1/2", box)
+        self.assertIn("Sandbox: off", box)
         narrow_script = "git pull --rebase || true\ngit status -sb\ngit log --oneline -5\ngit diff HEAD~3..HEAD --stat\n"
         narrow_sum = self.mod.summarize_script_actions(narrow_script, ROOT)
         narrow_sp = Path("/tmp/run_block/s28/10.sh")
@@ -209,8 +211,10 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("hello_world in_rb=1", out1)
         self.assertIn("[s1/1] START\n", out1)
         self.assertIn("[s1/1] END\n", out1)
-        self.assertIn("┌─ s1/1 · END ", buf.getvalue())
-        self.assertIn("┌─ s1/3 · NOT RUN ", buf.getvalue())
+        self.assertIn("┌─ END ", buf.getvalue())
+        self.assertIn("Block: s1/1", buf.getvalue())
+        self.assertIn("┌─ NOT RUN ", buf.getvalue())
+        self.assertIn("Block: s1/3", buf.getvalue())
 
     def test_failed_execution_and_chained_fixes(self):
         buf = io.StringIO()
@@ -235,7 +239,8 @@ class TestRunBlock(unittest.TestCase):
         out = (self.tmp / "s1/1.txt").read_text(encoding="utf-8")
         self.assertIn("END (syntax error", out)
         rendered = buf.getvalue()
-        self.assertIn("┌─ s1/1 · SYNTAX ERROR ─", rendered)
+        self.assertIn("┌─ SYNTAX ERROR ─", rendered)
+        self.assertIn("Block: s1/1", rendered)
         self.assertNotIn("SYNTAX ERROR (", rendered)
         self.assertIn("Exit: ", rendered)
         self.assertIn("Script: ", rendered)
@@ -250,17 +255,21 @@ class TestRunBlock(unittest.TestCase):
         s = self.mod.stats_line(f)
         self.assertIn("1 line · 6 B · ~2 tokens", s)
         box, _, _ = self.mod.format_clipboard_box("s2/1", f, stats=s)
-        self.assertIn("┌─ s2/1 · END ─", box)
+        self.assertIn("┌─ END ─", box)
+        self.assertIn("Block: s2/1", box)
+        self.assertIn("Workdir: ", box)
+        self.assertIn("Sandbox: off", box)
         self.assertNotIn("END (", box)
         self.assertIn(f"Output: {f}", box)
         self.assertIn("Stats: 1 line · 6 B · ~2 tokens", box)
         self.assertIn("-> Copy to clipboard? [Enter/v(iew)/Esc]:", box)
         lines = box.splitlines()
-        self.assertEqual(len(lines), 6)
+        self.assertEqual(len(lines), 10)
         self.assertEqual(len({self.mod.display_width(l) for l in lines}), 1)
 
         box_err, _, _ = self.mod.format_clipboard_box("s2/2", f, ok=False, rc=2, stats=s)
-        self.assertIn("┌─ s2/2 · END ─", box_err)
+        self.assertIn("┌─ END ─", box_err)
+        self.assertIn("Block: s2/2", box_err)
         self.assertIn("Exit: 2", box_err)
         self.assertIn(f"Output: {f}", box_err)
         self.assertIn("Stats: 1 line · 6 B · ~2 tokens", box_err)
@@ -334,7 +343,13 @@ class TestRunBlock(unittest.TestCase):
         proj.mkdir()
         env = {**os.environ, "RUN_BLOCK_DIR": str(self.tmp / "sessions"), "RUN_BLOCK_CWD": str(proj)}
 
-        bundle_input = "===== File: AGENTS.md =====\n# My Project Rules\n\n===== Prompt =====\nWork on task F1\n"
+        bundle_input = (
+            "Bundle-Command: agents_bundle role=execute task=F14\n"
+            "Chat-Lang: Russian\n"
+            "Role: execute\n"
+            "Task: F14\n\n"
+            "===== File: AGENTS.md =====\n# My Project Rules\n\n===== Prompt =====\nWork on task F1\n"
+        )
         r_pipe = subprocess.run(
             [str(SCRIPT)],
             input=bundle_input,
@@ -345,13 +360,23 @@ class TestRunBlock(unittest.TestCase):
             check=False,
         )
         self.assertEqual(r_pipe.returncode, 0, r_pipe.stderr)
-        self.assertIn("s1/0 · START BUNDLE", r_pipe.stdout)
+        self.assertIn("┌─ START BUNDLE ─", r_pipe.stdout)
+        self.assertIn("Session: s1", r_pipe.stdout)
         self.assertIn("Next-Block: s1/1", r_pipe.stdout)
+        self.assertIn("Sandbox: off", r_pipe.stdout)
+        self.assertIn("Role: execute", r_pipe.stdout)
+        self.assertIn("Task: F14", r_pipe.stdout)
+        self.assertNotIn("Date:", r_pipe.stdout)
+        self.assertNotIn("Bundle-Command:", r_pipe.stdout)
+        self.assertNotIn("Chat-Lang:", r_pipe.stdout)
         bundle1 = (self.tmp / "sessions/s1/0.txt").read_text(encoding="utf-8")
         self.assertIn("Session: s1\nNext-Block: s1/1\nWorkdir:", bundle1)
         self.assertIn("\nDate: ", bundle1)
         self.assertIn("===== File: AGENTS.md =====", bundle1)
         self.assertIn("Work on task F1", bundle1)
+        s1_hdrs = self.mod.parse_bundle_headers(self.tmp / "sessions/s1")
+        self.assertEqual(s1_hdrs.get("role"), "execute")
+        self.assertEqual(s1_hdrs.get("task"), "F14")
 
         r_step1 = subprocess.run(
             [str(SCRIPT), "s1/1"],
@@ -363,7 +388,10 @@ class TestRunBlock(unittest.TestCase):
             check=False,
         )
         self.assertEqual(r_step1.returncode, 0, r_step1.stderr)
-        self.assertIn("s1/1 · END", r_step1.stdout)
+        self.assertIn("┌─ END ─", r_step1.stdout)
+        self.assertIn("Block: s1/1", r_step1.stdout)
+        self.assertIn("Role: execute", r_step1.stdout)
+        self.assertIn("Task: F14", r_step1.stdout)
         self.assertIn("ran_s1_step1", r_step1.stdout)
 
         r_start = subprocess.run(
@@ -376,7 +404,8 @@ class TestRunBlock(unittest.TestCase):
             check=False,
         )
         self.assertEqual(r_start.returncode, 0, r_start.stderr)
-        self.assertIn("s2/0 · START BUNDLE", r_start.stdout)
+        self.assertIn("┌─ START BUNDLE ─", r_start.stdout)
+        self.assertIn("Session: s2", r_start.stdout)
 
         r_show0 = subprocess.run(
             [str(SCRIPT), "--show", "s2/0"],
@@ -440,15 +469,15 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn(str(proj.resolve()), r_imp2.stdout)
 
     def test_info_and_prompt_boxes_and_skipped_step_confirmation(self):
-        info_box = self.mod.format_info_box("s1/0 · START BUNDLE", ["Session: s1", "Next block: s1/1"])
-        self.assertIn("┌─ s1/0 · START BUNDLE ", info_box)
+        info_box = self.mod.format_info_box("START BUNDLE", ["Session: s1", "Next-Block: s1/1"])
+        self.assertIn("┌─ START BUNDLE ", info_box)
         self.assertEqual(len({self.mod.display_width(l) for l in info_box.splitlines()}), 1)
 
         yes_st = "✓ Proceeding with s1/2 (skipped previous step s1/1)."
         no_st = "✗ Canceled s1/2 (run s1/1 first)."
         p_box, p_inner, _ = self.mod.format_prompt_box(
-            "s1/2",
-            ["Missing: s1/1"],
+            "MISSING PREVIOUS STEP",
+            ["Block: s1/2", "", "Missing: s1/1"],
             "-> Run s1/2 anyway? [y/N]:",
             status_lines=(yes_st, no_st),
         )
@@ -463,24 +492,28 @@ class TestRunBlock(unittest.TestCase):
         tty_w = io.StringIO()
         tty_r = io.StringIO("y\n")
         ok = self.mod.prompt_yes_no_box(
-            "s1/2 · MISSING PREVIOUS STEP",
-            ["Missing: s1/1"],
+            "MISSING PREVIOUS STEP",
+            ["Block: s1/2", "", "Missing: s1/1"],
             "Run s1/2 anyway?",
             default_yes=False,
             tty_streams=(tty_w, tty_r),
         )
         self.assertTrue(ok)
+        self.assertIn("┌─ MISSING PREVIOUS STEP ─", tty_w.getvalue())
         self.assertIn("✓ Confirmed by user.", tty_w.getvalue())
 
         # Verify interactive declines do not emit duplicate NOT RUN / END boxes
         with unittest.mock.patch.object(self.mod, "no_clipboard", return_value=False), \
-             unittest.mock.patch.object(self.mod, "prompt_yes_no_box", return_value=False):
+             unittest.mock.patch.object(self.mod, "prompt_yes_no_box", return_value=False) as mock_prompt:
             buf_dec = io.StringIO()
             buf_dec.isatty = lambda: True  # type: ignore[method-assign]
             with contextlib.redirect_stdout(buf_dec):
                 rc_skip_dec = self.mod.cmd_normal("s9/2", "echo hi\n")
             self.assertEqual(rc_skip_dec, 2)
             self.assertEqual(buf_dec.getvalue(), "")
+            self.assertEqual(mock_prompt.call_args[0][0], "MISSING PREVIOUS STEP")
+            self.assertIn("Block: s9/2", mock_prompt.call_args[0][1])
+            self.assertIn("Missing: s9/1", mock_prompt.call_args[0][1])
 
             with contextlib.redirect_stdout(io.StringIO()):
                 self.mod.cmd_normal("s9/1", "echo step1\n", auto_yes=True)
@@ -490,6 +523,8 @@ class TestRunBlock(unittest.TestCase):
                 rc_dup_dec = self.mod.cmd_normal("s9/1", "echo step1_again\n")
             self.assertEqual(rc_dup_dec, 2)
             self.assertEqual(buf_dup_dec.getvalue(), "")
+            self.assertEqual(mock_prompt.call_args[0][0], "STEP ALREADY EXISTS")
+            self.assertIn("Block: s9/1", mock_prompt.call_args[0][1])
 
         with unittest.mock.patch.object(self.mod, "confirm_execution", return_value=(False, "USER_ABORTED")):
             buf_abort = io.StringIO()
@@ -513,8 +548,8 @@ class TestRunBlock(unittest.TestCase):
             tty_w_c = io.StringIO()
             tty_r_c = io.StringIO("s\no\nc\n")
             ok_c = self.mod.prompt_yes_no_box(
-                "s9/1 · STEP ALREADY EXISTS",
-                [f"Script: {s_script}", f"Output: {s_out}"],
+                "STEP ALREADY EXISTS",
+                ["Block: s9/1", "", f"Script: {s_script}", f"Output: {s_out}"],
                 "Overwrite and re-run s9/1?",
                 default_yes=False,
                 yes_status="✓ Overwriting s9/1.",
@@ -534,8 +569,8 @@ class TestRunBlock(unittest.TestCase):
             tty_w_enter = io.StringIO()
             tty_r_enter = io.StringIO("\n")
             ok_enter = self.mod.prompt_yes_no_box(
-                "s9/1 · STEP ALREADY EXISTS",
-                [f"Script: {s_script}", f"Output: {s_out}"],
+                "STEP ALREADY EXISTS",
+                ["Block: s9/1", "", f"Script: {s_script}", f"Output: {s_out}"],
                 "Overwrite and re-run s9/1?",
                 default_yes=False,
                 yes_status="✓ Overwriting s9/1.",
@@ -652,7 +687,8 @@ class TestRunBlock(unittest.TestCase):
         multi_cd = "cd /tmp\nls -la\ncd /var\nls -la\n"
         sum_cd = rb_mod.summarize_script_actions(multi_cd, Path("/home"))
         box_cd, _, _ = rb_mod.format_safety_box("s1/4", [], default_yes=True, summary=sum_cd)
-        self.assertIn("┌─ s1/4 · BLOCK PLAN ", box_cd)
+        self.assertIn("┌─ BLOCK PLAN ", box_cd)
+        self.assertIn("Block: s1/4", box_cd)
         self.assertIn("│   /tmp:", box_cd)
         stripped_lines = [l.strip("│ ") for l in box_cd.splitlines()]
         idx_var = stripped_lines.index("/var:")

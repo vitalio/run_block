@@ -58,3 +58,9 @@ Review CLI flags, stdin/stdout/stderr separation, and composability of run_block
 - Add `src/bundles/run_block.bundle` selecting `vitalio/run_block:blocks/bash` or `vitalio/run_block:blocks/pwsh` by OS.
 - Remove hardcoded `v{version:}` placeholder from `src/rules/blocks/bash.md` and `src/rules/blocks/pwsh.md` headers.
 - Remove `src/agents.py` and the `--agents` / `--agents-md` CLI flag from `src/header.py`, `src/cli.py`, `build.py`, `README.md`, `AGENTS.md`, `.agents_bundle`, and `tests/test_run_block.py`.
+
+# ✅ [DONE] F14: Unify TUI box titles and render session headers (Block/Session, Workdir, Sandbox, Role, Task) inside every box — *2026-11-15, Unify TUI box titles and render session headers in every box*
+
+- Strip the '<session>/<step> · ' prefix from TUI box top borders so box titles show only the block kind ('START BUNDLE', 'BLOCK PLAN', 'END', 'NOT RUN', 'SYNTAX ERROR', 'STEP ALREADY EXISTS', 'MISSING PREVIOUS STEP', 'SESSION ALREADY EXISTS').
+- Parse both run_block and stdin bundle header blocks in '0.txt' (up to the first '=====' section) so session variables ('Role', 'Task', and custom headers) are available across all steps.
+- Render a consistent session header section at the top of every session/step box ('Session'/'Next-Block' or 'Block: <session>/<step>', 'Workdir', 'Sandbox', plus session variables like 'Role' and 'Task' excluding noisy 'Date'/'Bundle-Command'/'Chat-Lang'), followed by a blank line and the box-specific details ('Bundle', 'Script', 'Operations', 'Output', 'Stats', etc.).

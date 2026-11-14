@@ -133,21 +133,15 @@ def cmd_start(argv: list[str], stdin_text: str | None = None, sandbox_override: 
     bundle_path = sdir / "0.txt"
     res = format_start_bundle(session_name=session_name, stdin_body=stdin_text, sandbox_mode=sb_arg)
     write_private(bundle_path, str(res["full"]), overwrite=True)
-    wdir = get_work_dir(sdir).resolve()
-    sb_mode = get_sandbox_mode(sdir, override=sb_arg)
-    body_lines = [
-        f"Next-Block: {session_name}/1",
-        f"Workdir: {wdir}",
-    ]
-    if sb_mode != "off":
-        body_lines.append(f"Sandbox: {format_sandbox_header(sb_mode)}")
-    body_lines.append(f"Bundle: {bundle_path}")
+    body_lines = [f"Bundle: {bundle_path}"]
     label0 = f"{session_name}/0"
     if not in_run_block() and sys.stdout.isatty() and clipboard_mode() == "prompt" and clipboard_command(bundle_path) is not None:
         offer_clipboard_copy(label0, bundle_path, ok=True, rc=0, title_kind="START BUNDLE", extra_lines=body_lines)
     else:
-        full_body = build_box_body_lines(bundle_path, rc=0, stats=stats_line(bundle_path), extra_lines=body_lines)
-        sys.stdout.write(format_info_box(f"{label0} · START BUNDLE", full_body) + "\n")
+        full_body = build_box_body_lines(
+            bundle_path, rc=0, stats=stats_line(bundle_path), extra_lines=body_lines, label=label0
+        )
+        sys.stdout.write(format_info_box("START BUNDLE", full_body) + "\n")
         sys.stdout.flush()
         if not in_run_block():
             offer_clipboard_copy(label0, bundle_path, ok=True, rc=0, title_kind="START BUNDLE", extra_lines=body_lines)

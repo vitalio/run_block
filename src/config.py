@@ -132,27 +132,53 @@ def _git_toplevel_or_cwd() -> Path:
 BUNDLE_HEADER_RE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z0-9-]+)?):\s*(.*)$")
 
 
-def parse_bundle_headers(session_dir: Path | None) -> dict[str, str]:
-    headers: dict[str, str] = {}
+HIDDEN_SESSION_HEADER_KEYS = frozenset({
+    "session",
+    "next-block",
+    "block",
+    "workdir",
+    "work-dir",
+    "sandbox",
+    "date",
+    "bundle-command",
+    "chat-lang",
+})
+
+
+def parse_bundle_header_items(session_dir: Path | None) -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = []
+    index_by_norm: dict[str, int] = {}
     if session_dir is None:
-        return headers
+        return items
     bundle_file = session_dir / "0.txt"
     if not bundle_file.is_file():
-        return headers
+        return items
     try:
         with bundle_file.open(encoding="utf-8", errors="replace") as f:
             for line in f:
                 stripped = line.strip()
-                if not stripped or stripped.startswith("====="):
+                if not stripped:
+                    continue
+                if stripped.startswith("====="):
                     break
                 m = BUNDLE_HEADER_RE.match(stripped)
                 if not m:
                     break
-                key = re.sub(r"\s+", "-", m.group(1).strip().lower())
-                headers[key] = m.group(2).strip()
+                raw_key = re.sub(r"\s+", "-", m.group(1).strip())
+                norm_key = raw_key.lower()
+                val = m.group(2).strip()
+                if norm_key in index_by_norm:
+                    items[index_by_norm[norm_key]] = (raw_key, val)
+                else:
+                    index_by_norm[norm_key] = len(items)
+                    items.append((raw_key, val))
     except OSError:
         pass
-    return headers
+    return items
+
+
+def parse_bundle_headers(session_dir: Path | None) -> dict[str, str]:
+    return {k.lower(): v for k, v in parse_bundle_header_items(session_dir)}
 
 
 def _session_bundle_workdir(session_dir: Path | None) -> Path | None:

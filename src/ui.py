@@ -72,6 +72,78 @@ def _wrap_labeled_items(items: list[tuple[str, str]], max_width: int, indent: st
     return out
 
 
+def _resolve_session_dir(label: str | None = None, path_hint: Path | None = None) -> Path | None:
+    if path_hint is not None:
+        parent = path_hint.parent
+        if (parent / "0.txt").is_file():
+            return parent
+    if label:
+        sess = label.split("/", 1)[0].strip()
+        if sess and (BASE_DIR / sess).is_dir():
+            return BASE_DIR / sess
+    if path_hint is not None:
+        parent = path_hint.parent
+        if re.fullmatch(r"s\d+", parent.name):
+            return parent
+    if label:
+        sess = label.split("/", 1)[0].strip()
+        if sess:
+            return BASE_DIR / sess
+    return None
+
+
+def format_session_header_lines(
+    label: str | None = None,
+    sdir: Path | None = None,
+    work_dir: Path | str | None = None,
+    sandbox_mode: str | None = None,
+    cd_dirs: list[str] | None = None,
+    max_width: int | None = None,
+) -> list[str]:
+    resolved_sdir = sdir if sdir is not None else _resolve_session_dir(label)
+    hdr_items = parse_bundle_header_items(resolved_sdir)
+    hdr_map = {k.lower(): v for k, v in hdr_items}
+
+    lines: list[str] = []
+    if label:
+        if "/" in label:
+            sess, step = label.split("/", 1)
+            if step == "0":
+                lines.append(f"Session: {sess}")
+                nxt = hdr_map.get("next-block") or f"{sess}/1"
+                lines.append(f"Next-Block: {nxt}")
+            else:
+                lines.append(f"Block: {label}")
+        else:
+            lines.append(f"Session: {label}")
+    elif resolved_sdir is not None:
+        sess = hdr_map.get("session") or resolved_sdir.name
+        lines.append(f"Session: {sess}")
+
+    if work_dir is not None and str(work_dir):
+        wdir_str = str(work_dir)
+    else:
+        wdir_str = str(get_work_dir(resolved_sdir).resolve())
+    wline = f"Workdir: {wdir_str}" + (f"  (cd -> {', '.join(cd_dirs)})" if cd_dirs else "")
+    if max_width is not None:
+        lines.extend(textwrap.wrap(wline, width=max_width) or [wline])
+    else:
+        lines.append(wline)
+
+    sb_val = sandbox_mode if (sandbox_mode is not None and str(sandbox_mode)) else get_sandbox_mode(resolved_sdir)
+    sb_line = f"Sandbox: {format_sandbox_header(sb_val)}"
+    if max_width is not None:
+        lines.extend(textwrap.wrap(sb_line, width=max_width) or [sb_line])
+    else:
+        lines.append(sb_line)
+
+    for raw_k, val in hdr_items:
+        if raw_k.lower() in HIDDEN_SESSION_HEADER_KEYS or not val:
+            continue
+        lines.append(f"{raw_k}: {val}")
+    return lines
+
+
 def format_safety_box(
     label: str,
     findings: list[dict[str, object]],
@@ -81,41 +153,48 @@ def format_safety_box(
     script_path: Path | None = None,
 ) -> tuple[str, int, int]:
     meta_str = str(summary.get("meta", "")) if summary else ""
-    title = f" {label} · BLOCK PLAN "
+    title = " BLOCK PLAN "
     prompt_suffix = "[Y/n/v(iew)]:" if default_yes else "[y/n/v(iew)]:"
     prompt_line = f"-> Execute this block? {prompt_suffix}"
     term_cols = shutil.get_terminal_size((100, 24)).columns
     max_row_len = max(64, term_cols - 6)
 
-    content_lines: list[str] = []
+    sdir = _resolve_session_dir(label, script_path)
+    wdir = str(summary.get("work_dir") or "") if summary else ""
+    cd_dirs = list(summary.get("cd_dirs") or []) if summary else []
+    sb_mode = str(summary.get("sandbox") or "") if summary else ""
+    content_lines: list[str] = format_session_header_lines(
+        label=label,
+        sdir=sdir,
+        work_dir=wdir or None,
+        sandbox_mode=sb_mode or None,
+        cd_dirs=cd_dirs,
+        max_width=max_row_len,
+    )
     if summary:
-        wdir = str(summary.get("work_dir") or "")
-        cd_dirs = list(summary.get("cd_dirs") or [])
-        sb_mode = str(summary.get("sandbox") or "off")
-        if wdir:
-            wline = f"Workdir: {wdir}" + (f"  (cd -> {', '.join(cd_dirs)})" if cd_dirs else "")
-            content_lines.extend(textwrap.wrap(wline, width=max_row_len) or [wline])
-        if sb_mode and sb_mode != "off":
-            sb_line = f"Sandbox: {format_sandbox_header(sb_mode)}"
-            content_lines.extend(textwrap.wrap(sb_line, width=max_row_len) or [sb_line])
+        detail_lines: list[str] = []
         if meta_str:
-            content_lines.append(f"Script: {meta_str}")
+            detail_lines.append(f"Script: {meta_str}")
         ops = list(summary.get("operations") or [])
         op_groups = list(summary.get("operation_groups") or [])
         has_subdirs = any(bool(g_dir) for g_dir, _ in op_groups)
         if ops:
-            if content_lines:
-                content_lines.append("")
-            content_lines.append("Operations:")
+            if detail_lines:
+                detail_lines.append("")
+            detail_lines.append("Operations:")
             if has_subdirs and op_groups:
                 for idx, (g_dir, g_items) in enumerate(op_groups):
                     if idx > 0:
-                        content_lines.append("")
+                        detail_lines.append("")
                     dir_hdr = g_dir if g_dir else (wdir or ".")
-                    content_lines.append(f"  {dir_hdr}:")
-                    content_lines.extend(_wrap_labeled_items(g_items, max_row_len, indent="    "))
+                    detail_lines.append(f"  {dir_hdr}:")
+                    detail_lines.extend(_wrap_labeled_items(g_items, max_row_len, indent="    "))
             else:
-                content_lines.extend(_wrap_labeled_items(ops, max_row_len, indent="  "))
+                detail_lines.extend(_wrap_labeled_items(ops, max_row_len, indent="  "))
+        if detail_lines:
+            if content_lines:
+                content_lines.append("")
+            content_lines.extend(detail_lines)
 
     if findings:
         if content_lines:
@@ -625,17 +704,26 @@ def build_box_body_lines(
     rc: int | None = None,
     stats: str | None = None,
     extra_lines: list[str] | None = None,
+    label: str | None = None,
+    sdir: Path | None = None,
 ) -> list[str]:
     if extra_lines is not None:
-        body_lines = list(extra_lines)
+        detail_lines = list(extra_lines)
     else:
-        body_lines = []
+        detail_lines = []
         if rc is not None and rc != 0:
-            body_lines.append(f"Exit: {rc}")
-        body_lines.append(f"Output: {out_path}")
-    if stats and not any(line.startswith("Stats:") for line in body_lines):
-        body_lines.append(f"Stats: {stats}")
-    return body_lines
+            detail_lines.append(f"Exit: {rc}")
+        detail_lines.append(f"Output: {out_path}")
+    if stats and not any(line.startswith("Stats:") for line in detail_lines):
+        detail_lines.append(f"Stats: {stats}")
+    has_header = any(line.startswith(("Block:", "Session:")) for line in detail_lines)
+    if has_header or (label is None and sdir is None):
+        return detail_lines
+    resolved_sdir = sdir if sdir is not None else _resolve_session_dir(label, out_path)
+    hdr_lines = format_session_header_lines(label=label, sdir=resolved_sdir)
+    if detail_lines:
+        return [*hdr_lines, "", *detail_lines]
+    return hdr_lines
 
 
 def format_clipboard_box(
@@ -648,8 +736,8 @@ def format_clipboard_box(
     extra_lines: list[str] | None = None,
     cmd_str: str | None = None,
 ) -> tuple[str, int, int]:
-    title = f" {label} · {title_kind} "
-    body_lines = build_box_body_lines(out_path, rc=rc, stats=stats, extra_lines=extra_lines)
+    title = f" {title_kind} "
+    body_lines = build_box_body_lines(out_path, rc=rc, stats=stats, extra_lines=extra_lines, label=label)
     prompt_line = "-> Copy to clipboard? [Enter/v(iew)/Esc]:"
     status_lines = [
         f"✓ Copied {out_path} to clipboard.",

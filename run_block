@@ -51,7 +51,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.18.0"
+VERSION = "0.18.1"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 
@@ -190,27 +190,53 @@ def _git_toplevel_or_cwd() -> Path:
 BUNDLE_HEADER_RE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z0-9-]+)?):\s*(.*)$")
 
 
-def parse_bundle_headers(session_dir: Path | None) -> dict[str, str]:
-    headers: dict[str, str] = {}
+HIDDEN_SESSION_HEADER_KEYS = frozenset({
+    "session",
+    "next-block",
+    "block",
+    "workdir",
+    "work-dir",
+    "sandbox",
+    "date",
+    "bundle-command",
+    "chat-lang",
+})
+
+
+def parse_bundle_header_items(session_dir: Path | None) -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = []
+    index_by_norm: dict[str, int] = {}
     if session_dir is None:
-        return headers
+        return items
     bundle_file = session_dir / "0.txt"
     if not bundle_file.is_file():
-        return headers
+        return items
     try:
         with bundle_file.open(encoding="utf-8", errors="replace") as f:
             for line in f:
                 stripped = line.strip()
-                if not stripped or stripped.startswith("====="):
+                if not stripped:
+                    continue
+                if stripped.startswith("====="):
                     break
                 m = BUNDLE_HEADER_RE.match(stripped)
                 if not m:
                     break
-                key = re.sub(r"\s+", "-", m.group(1).strip().lower())
-                headers[key] = m.group(2).strip()
+                raw_key = re.sub(r"\s+", "-", m.group(1).strip())
+                norm_key = raw_key.lower()
+                val = m.group(2).strip()
+                if norm_key in index_by_norm:
+                    items[index_by_norm[norm_key]] = (raw_key, val)
+                else:
+                    index_by_norm[norm_key] = len(items)
+                    items.append((raw_key, val))
     except OSError:
         pass
-    return headers
+    return items
+
+
+def parse_bundle_headers(session_dir: Path | None) -> dict[str, str]:
+    return {k.lower(): v for k, v in parse_bundle_header_items(session_dir)}
 
 
 def _session_bundle_workdir(session_dir: Path | None) -> Path | None:
@@ -1257,6 +1283,78 @@ def _wrap_labeled_items(items: list[tuple[str, str]], max_width: int, indent: st
     return out
 
 
+def _resolve_session_dir(label: str | None = None, path_hint: Path | None = None) -> Path | None:
+    if path_hint is not None:
+        parent = path_hint.parent
+        if (parent / "0.txt").is_file():
+            return parent
+    if label:
+        sess = label.split("/", 1)[0].strip()
+        if sess and (BASE_DIR / sess).is_dir():
+            return BASE_DIR / sess
+    if path_hint is not None:
+        parent = path_hint.parent
+        if re.fullmatch(r"s\d+", parent.name):
+            return parent
+    if label:
+        sess = label.split("/", 1)[0].strip()
+        if sess:
+            return BASE_DIR / sess
+    return None
+
+
+def format_session_header_lines(
+    label: str | None = None,
+    sdir: Path | None = None,
+    work_dir: Path | str | None = None,
+    sandbox_mode: str | None = None,
+    cd_dirs: list[str] | None = None,
+    max_width: int | None = None,
+) -> list[str]:
+    resolved_sdir = sdir if sdir is not None else _resolve_session_dir(label)
+    hdr_items = parse_bundle_header_items(resolved_sdir)
+    hdr_map = {k.lower(): v for k, v in hdr_items}
+
+    lines: list[str] = []
+    if label:
+        if "/" in label:
+            sess, step = label.split("/", 1)
+            if step == "0":
+                lines.append(f"Session: {sess}")
+                nxt = hdr_map.get("next-block") or f"{sess}/1"
+                lines.append(f"Next-Block: {nxt}")
+            else:
+                lines.append(f"Block: {label}")
+        else:
+            lines.append(f"Session: {label}")
+    elif resolved_sdir is not None:
+        sess = hdr_map.get("session") or resolved_sdir.name
+        lines.append(f"Session: {sess}")
+
+    if work_dir is not None and str(work_dir):
+        wdir_str = str(work_dir)
+    else:
+        wdir_str = str(get_work_dir(resolved_sdir).resolve())
+    wline = f"Workdir: {wdir_str}" + (f"  (cd -> {', '.join(cd_dirs)})" if cd_dirs else "")
+    if max_width is not None:
+        lines.extend(textwrap.wrap(wline, width=max_width) or [wline])
+    else:
+        lines.append(wline)
+
+    sb_val = sandbox_mode if (sandbox_mode is not None and str(sandbox_mode)) else get_sandbox_mode(resolved_sdir)
+    sb_line = f"Sandbox: {format_sandbox_header(sb_val)}"
+    if max_width is not None:
+        lines.extend(textwrap.wrap(sb_line, width=max_width) or [sb_line])
+    else:
+        lines.append(sb_line)
+
+    for raw_k, val in hdr_items:
+        if raw_k.lower() in HIDDEN_SESSION_HEADER_KEYS or not val:
+            continue
+        lines.append(f"{raw_k}: {val}")
+    return lines
+
+
 def format_safety_box(
     label: str,
     findings: list[dict[str, object]],
@@ -1266,41 +1364,48 @@ def format_safety_box(
     script_path: Path | None = None,
 ) -> tuple[str, int, int]:
     meta_str = str(summary.get("meta", "")) if summary else ""
-    title = f" {label} · BLOCK PLAN "
+    title = " BLOCK PLAN "
     prompt_suffix = "[Y/n/v(iew)]:" if default_yes else "[y/n/v(iew)]:"
     prompt_line = f"-> Execute this block? {prompt_suffix}"
     term_cols = shutil.get_terminal_size((100, 24)).columns
     max_row_len = max(64, term_cols - 6)
 
-    content_lines: list[str] = []
+    sdir = _resolve_session_dir(label, script_path)
+    wdir = str(summary.get("work_dir") or "") if summary else ""
+    cd_dirs = list(summary.get("cd_dirs") or []) if summary else []
+    sb_mode = str(summary.get("sandbox") or "") if summary else ""
+    content_lines: list[str] = format_session_header_lines(
+        label=label,
+        sdir=sdir,
+        work_dir=wdir or None,
+        sandbox_mode=sb_mode or None,
+        cd_dirs=cd_dirs,
+        max_width=max_row_len,
+    )
     if summary:
-        wdir = str(summary.get("work_dir") or "")
-        cd_dirs = list(summary.get("cd_dirs") or [])
-        sb_mode = str(summary.get("sandbox") or "off")
-        if wdir:
-            wline = f"Workdir: {wdir}" + (f"  (cd -> {', '.join(cd_dirs)})" if cd_dirs else "")
-            content_lines.extend(textwrap.wrap(wline, width=max_row_len) or [wline])
-        if sb_mode and sb_mode != "off":
-            sb_line = f"Sandbox: {format_sandbox_header(sb_mode)}"
-            content_lines.extend(textwrap.wrap(sb_line, width=max_row_len) or [sb_line])
+        detail_lines: list[str] = []
         if meta_str:
-            content_lines.append(f"Script: {meta_str}")
+            detail_lines.append(f"Script: {meta_str}")
         ops = list(summary.get("operations") or [])
         op_groups = list(summary.get("operation_groups") or [])
         has_subdirs = any(bool(g_dir) for g_dir, _ in op_groups)
         if ops:
-            if content_lines:
-                content_lines.append("")
-            content_lines.append("Operations:")
+            if detail_lines:
+                detail_lines.append("")
+            detail_lines.append("Operations:")
             if has_subdirs and op_groups:
                 for idx, (g_dir, g_items) in enumerate(op_groups):
                     if idx > 0:
-                        content_lines.append("")
+                        detail_lines.append("")
                     dir_hdr = g_dir if g_dir else (wdir or ".")
-                    content_lines.append(f"  {dir_hdr}:")
-                    content_lines.extend(_wrap_labeled_items(g_items, max_row_len, indent="    "))
+                    detail_lines.append(f"  {dir_hdr}:")
+                    detail_lines.extend(_wrap_labeled_items(g_items, max_row_len, indent="    "))
             else:
-                content_lines.extend(_wrap_labeled_items(ops, max_row_len, indent="  "))
+                detail_lines.extend(_wrap_labeled_items(ops, max_row_len, indent="  "))
+        if detail_lines:
+            if content_lines:
+                content_lines.append("")
+            content_lines.extend(detail_lines)
 
     if findings:
         if content_lines:
@@ -1810,17 +1915,26 @@ def build_box_body_lines(
     rc: int | None = None,
     stats: str | None = None,
     extra_lines: list[str] | None = None,
+    label: str | None = None,
+    sdir: Path | None = None,
 ) -> list[str]:
     if extra_lines is not None:
-        body_lines = list(extra_lines)
+        detail_lines = list(extra_lines)
     else:
-        body_lines = []
+        detail_lines = []
         if rc is not None and rc != 0:
-            body_lines.append(f"Exit: {rc}")
-        body_lines.append(f"Output: {out_path}")
-    if stats and not any(line.startswith("Stats:") for line in body_lines):
-        body_lines.append(f"Stats: {stats}")
-    return body_lines
+            detail_lines.append(f"Exit: {rc}")
+        detail_lines.append(f"Output: {out_path}")
+    if stats and not any(line.startswith("Stats:") for line in detail_lines):
+        detail_lines.append(f"Stats: {stats}")
+    has_header = any(line.startswith(("Block:", "Session:")) for line in detail_lines)
+    if has_header or (label is None and sdir is None):
+        return detail_lines
+    resolved_sdir = sdir if sdir is not None else _resolve_session_dir(label, out_path)
+    hdr_lines = format_session_header_lines(label=label, sdir=resolved_sdir)
+    if detail_lines:
+        return [*hdr_lines, "", *detail_lines]
+    return hdr_lines
 
 
 def format_clipboard_box(
@@ -1833,8 +1947,8 @@ def format_clipboard_box(
     extra_lines: list[str] | None = None,
     cmd_str: str | None = None,
 ) -> tuple[str, int, int]:
-    title = f" {label} · {title_kind} "
-    body_lines = build_box_body_lines(out_path, rc=rc, stats=stats, extra_lines=extra_lines)
+    title = f" {title_kind} "
+    body_lines = build_box_body_lines(out_path, rc=rc, stats=stats, extra_lines=extra_lines, label=label)
     prompt_line = "-> Copy to clipboard? [Enter/v(iew)/Esc]:"
     status_lines = [
         f"✓ Copied {out_path} to clipboard.",
@@ -1960,9 +2074,12 @@ def start_session(name: str | None = None, force: bool = False, sandbox_mode: st
             if not sys.stdin.isatty():
                 raise SystemExit(f"{prog_name()}: session {sdir} already exists (use --force to overwrite)")
             if sys.stdout.isatty() and not no_clipboard():
+                sess_hdr = format_session_header_lines(
+                    label=name, sdir=sdir, sandbox_mode=sandbox_mode
+                )
                 ok = prompt_yes_no_box(
-                    f"{name} · SESSION ALREADY EXISTS",
-                    [f"Directory: {sdir}"],
+                    "SESSION ALREADY EXISTS",
+                    [*sess_hdr, "", f"Directory: {sdir}"],
                     f"Overwrite session {name}?",
                     default_yes=False,
                     yes_status=f"✓ Overwriting session {name}.",
@@ -2036,8 +2153,10 @@ def not_run_exit(
     if can_prompt_clip:
         offer_clipboard_copy(label, err_target, ok=False, rc=rc, title_kind="NOT RUN", extra_lines=body_lines)
     else:
-        full_body = build_box_body_lines(err_target, rc=rc, stats=stats_line(err_target), extra_lines=body_lines)
-        sys.stdout.write(format_info_box(f"{label} · NOT RUN", full_body) + "\n")
+        full_body = build_box_body_lines(
+            err_target, rc=rc, stats=stats_line(err_target), extra_lines=body_lines, label=label, sdir=sdir
+        )
+        sys.stdout.write(format_info_box("NOT RUN", full_body) + "\n")
         sys.stdout.flush()
         if not in_run_block():
             offer_clipboard_copy(label, err_target, ok=False, rc=rc, title_kind="NOT RUN", extra_lines=body_lines)
@@ -2108,8 +2227,10 @@ def run_script(
         if can_prompt_clip:
             offer_clipboard_copy(label, out_path, ok=False, rc=chk.returncode, title_kind="SYNTAX ERROR", extra_lines=box_lines)
         else:
-            full_body = build_box_body_lines(out_path, rc=chk.returncode, stats=stats_line(out_path), extra_lines=box_lines)
-            sys.stdout.write(format_info_box(f"{label} · SYNTAX ERROR", full_body) + "\n")
+            full_body = build_box_body_lines(
+                out_path, rc=chk.returncode, stats=stats_line(out_path), extra_lines=box_lines, label=label, sdir=sdir
+            )
+            sys.stdout.write(format_info_box("SYNTAX ERROR", full_body) + "\n")
             sys.stdout.flush()
             if not in_run_block():
                 offer_clipboard_copy(label, out_path, ok=False, rc=chk.returncode, title_kind="SYNTAX ERROR", extra_lines=box_lines)
@@ -2239,8 +2360,8 @@ def run_script(
         sys.stdout.write(end_line)
         sys.stdout.flush()
     elif in_run_block() or not sys.stdout.isatty() or clipboard_mode() != "prompt" or clipboard_command(clip_target) is None:
-        end_body = build_box_body_lines(clip_target, rc=rc, stats=stats_line(clip_target))
-        sys.stdout.write("\n" + format_info_box(f"{label} · END", end_body) + "\n")
+        end_body = build_box_body_lines(clip_target, rc=rc, stats=stats_line(clip_target), label=label, sdir=sdir)
+        sys.stdout.write("\n" + format_info_box("END", end_body) + "\n")
         sys.stdout.flush()
     if not headless:
         offer_clipboard_copy(label, clip_target, ok=(rc == 0), rc=rc)
@@ -2283,9 +2404,12 @@ def cmd_normal(
                 existing_lines.append(f"Script: {script_path}")
             if out_path.exists():
                 existing_lines.append(f"Output: {out_path}")
+            step_hdr = format_session_header_lines(
+                label=label, sdir=sdir, sandbox_mode=sandbox_override
+            )
             if prompt_yes_no_box(
-                f"{label} · STEP ALREADY EXISTS",
-                existing_lines,
+                "STEP ALREADY EXISTS",
+                [*step_hdr, "", *existing_lines],
                 f"Overwrite and re-run {label}?",
                 default_yes=False,
                 yes_status=f"✓ Overwriting {label}.",
@@ -2303,9 +2427,12 @@ def cmd_normal(
         prev_label = f"{session}/{step_num - 1}"
         allow_skip = False
         if sys.stdout.isatty() and not no_clipboard() and not headless:
+            step_hdr = format_session_header_lines(
+                label=label, sdir=sdir, sandbox_mode=sandbox_override
+            )
             allow_skip = prompt_yes_no_box(
-                f"{label} · MISSING PREVIOUS STEP",
-                [f"Missing: {prev_label}"],
+                "MISSING PREVIOUS STEP",
+                [*step_hdr, "", f"Missing: {prev_label}"],
                 f"Run {label} anyway?",
                 default_yes=False,
                 yes_status=f"✓ Proceeding with {label} (skipped {prev_label}).",
@@ -2828,21 +2955,15 @@ def cmd_start(argv: list[str], stdin_text: str | None = None, sandbox_override: 
     bundle_path = sdir / "0.txt"
     res = format_start_bundle(session_name=session_name, stdin_body=stdin_text, sandbox_mode=sb_arg)
     write_private(bundle_path, str(res["full"]), overwrite=True)
-    wdir = get_work_dir(sdir).resolve()
-    sb_mode = get_sandbox_mode(sdir, override=sb_arg)
-    body_lines = [
-        f"Next-Block: {session_name}/1",
-        f"Workdir: {wdir}",
-    ]
-    if sb_mode != "off":
-        body_lines.append(f"Sandbox: {format_sandbox_header(sb_mode)}")
-    body_lines.append(f"Bundle: {bundle_path}")
+    body_lines = [f"Bundle: {bundle_path}"]
     label0 = f"{session_name}/0"
     if not in_run_block() and sys.stdout.isatty() and clipboard_mode() == "prompt" and clipboard_command(bundle_path) is not None:
         offer_clipboard_copy(label0, bundle_path, ok=True, rc=0, title_kind="START BUNDLE", extra_lines=body_lines)
     else:
-        full_body = build_box_body_lines(bundle_path, rc=0, stats=stats_line(bundle_path), extra_lines=body_lines)
-        sys.stdout.write(format_info_box(f"{label0} · START BUNDLE", full_body) + "\n")
+        full_body = build_box_body_lines(
+            bundle_path, rc=0, stats=stats_line(bundle_path), extra_lines=body_lines, label=label0
+        )
+        sys.stdout.write(format_info_box("START BUNDLE", full_body) + "\n")
         sys.stdout.flush()
         if not in_run_block():
             offer_clipboard_copy(label0, bundle_path, ok=True, rc=0, title_kind="START BUNDLE", extra_lines=body_lines)

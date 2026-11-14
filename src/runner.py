@@ -31,9 +31,12 @@ def start_session(name: str | None = None, force: bool = False, sandbox_mode: st
             if not sys.stdin.isatty():
                 raise SystemExit(f"{prog_name()}: session {sdir} already exists (use --force to overwrite)")
             if sys.stdout.isatty() and not no_clipboard():
+                sess_hdr = format_session_header_lines(
+                    label=name, sdir=sdir, sandbox_mode=sandbox_mode
+                )
                 ok = prompt_yes_no_box(
-                    f"{name} · SESSION ALREADY EXISTS",
-                    [f"Directory: {sdir}"],
+                    "SESSION ALREADY EXISTS",
+                    [*sess_hdr, "", f"Directory: {sdir}"],
                     f"Overwrite session {name}?",
                     default_yes=False,
                     yes_status=f"✓ Overwriting session {name}.",
@@ -107,8 +110,10 @@ def not_run_exit(
     if can_prompt_clip:
         offer_clipboard_copy(label, err_target, ok=False, rc=rc, title_kind="NOT RUN", extra_lines=body_lines)
     else:
-        full_body = build_box_body_lines(err_target, rc=rc, stats=stats_line(err_target), extra_lines=body_lines)
-        sys.stdout.write(format_info_box(f"{label} · NOT RUN", full_body) + "\n")
+        full_body = build_box_body_lines(
+            err_target, rc=rc, stats=stats_line(err_target), extra_lines=body_lines, label=label, sdir=sdir
+        )
+        sys.stdout.write(format_info_box("NOT RUN", full_body) + "\n")
         sys.stdout.flush()
         if not in_run_block():
             offer_clipboard_copy(label, err_target, ok=False, rc=rc, title_kind="NOT RUN", extra_lines=body_lines)
@@ -179,8 +184,10 @@ def run_script(
         if can_prompt_clip:
             offer_clipboard_copy(label, out_path, ok=False, rc=chk.returncode, title_kind="SYNTAX ERROR", extra_lines=box_lines)
         else:
-            full_body = build_box_body_lines(out_path, rc=chk.returncode, stats=stats_line(out_path), extra_lines=box_lines)
-            sys.stdout.write(format_info_box(f"{label} · SYNTAX ERROR", full_body) + "\n")
+            full_body = build_box_body_lines(
+                out_path, rc=chk.returncode, stats=stats_line(out_path), extra_lines=box_lines, label=label, sdir=sdir
+            )
+            sys.stdout.write(format_info_box("SYNTAX ERROR", full_body) + "\n")
             sys.stdout.flush()
             if not in_run_block():
                 offer_clipboard_copy(label, out_path, ok=False, rc=chk.returncode, title_kind="SYNTAX ERROR", extra_lines=box_lines)
@@ -310,8 +317,8 @@ def run_script(
         sys.stdout.write(end_line)
         sys.stdout.flush()
     elif in_run_block() or not sys.stdout.isatty() or clipboard_mode() != "prompt" or clipboard_command(clip_target) is None:
-        end_body = build_box_body_lines(clip_target, rc=rc, stats=stats_line(clip_target))
-        sys.stdout.write("\n" + format_info_box(f"{label} · END", end_body) + "\n")
+        end_body = build_box_body_lines(clip_target, rc=rc, stats=stats_line(clip_target), label=label, sdir=sdir)
+        sys.stdout.write("\n" + format_info_box("END", end_body) + "\n")
         sys.stdout.flush()
     if not headless:
         offer_clipboard_copy(label, clip_target, ok=(rc == 0), rc=rc)
@@ -354,9 +361,12 @@ def cmd_normal(
                 existing_lines.append(f"Script: {script_path}")
             if out_path.exists():
                 existing_lines.append(f"Output: {out_path}")
+            step_hdr = format_session_header_lines(
+                label=label, sdir=sdir, sandbox_mode=sandbox_override
+            )
             if prompt_yes_no_box(
-                f"{label} · STEP ALREADY EXISTS",
-                existing_lines,
+                "STEP ALREADY EXISTS",
+                [*step_hdr, "", *existing_lines],
                 f"Overwrite and re-run {label}?",
                 default_yes=False,
                 yes_status=f"✓ Overwriting {label}.",
@@ -374,9 +384,12 @@ def cmd_normal(
         prev_label = f"{session}/{step_num - 1}"
         allow_skip = False
         if sys.stdout.isatty() and not no_clipboard() and not headless:
+            step_hdr = format_session_header_lines(
+                label=label, sdir=sdir, sandbox_mode=sandbox_override
+            )
             allow_skip = prompt_yes_no_box(
-                f"{label} · MISSING PREVIOUS STEP",
-                [f"Missing: {prev_label}"],
+                "MISSING PREVIOUS STEP",
+                [*step_hdr, "", f"Missing: {prev_label}"],
                 f"Run {label} anyway?",
                 default_yes=False,
                 yes_status=f"✓ Proceeding with {label} (skipped {prev_label}).",
