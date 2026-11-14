@@ -729,14 +729,14 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("net-write", cats)
 
         ext_script = (
-            'cat "$HOME/todo_md/VERSION"\n'
-            'cat "$HOME/todo_md/README.md"\n'
-            'cat "$HOME/co_turn/README.md"\n'
+            'cat "$HOME/proj_a/VERSION"\n'
+            'cat "$HOME/proj_a/README.md"\n'
+            'cat "$HOME/proj_b/README.md"\n'
         )
         summary = self.mod.summarize_script_actions(ext_script, Path("/tmp"))
         groups = summary["operation_groups"]
-        self.assertEqual(groups[0][0], "$HOME/todo_md")
-        self.assertEqual(groups[1][0], "$HOME/co_turn")
+        self.assertEqual(groups[0][0], "$HOME/proj_a")
+        self.assertEqual(groups[1][0], "$HOME/proj_b")
 
 
 if __name__ == "__main__":

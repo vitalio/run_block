@@ -35,6 +35,7 @@ git status -sb
 - **No step reuse:** Every executed block consumes its step number, even if it fails. Never reuse or skip a step number.
 - **No duplicate unexecuted blocks:** If the user asks a question or requests an explanation about a block you already output in the previous reply and the script itself does not need to change, answer in prose and tell the user to run that existing `<session>/<step>` block — **do not** output the same block a second time.
 - **Isolated shell:** Each block runs in a fresh `pwsh` process starting in `Workdir` (`cd` and shell variables do not persist across blocks).
+- **Starting a new session:** To initialize a new session bundle (`0.txt`), pipe a context bundle into `{cmd:run_block}` on `stdin` (`<bundle_cmd> | {cmd:run_block}`).
 
 ### Fixing a Failed Block (`--fix <session>/<target>`) — ALWAYS PREFER OVER REWRITING
 

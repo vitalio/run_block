@@ -52,7 +52,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.17.1"
+VERSION = "0.17.2"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 
@@ -355,6 +355,9 @@ EMBEDDED_RULES: dict[str, tuple[str, str]] = {'blocks/bash': ('Bash terminal blo
                  'second time.\n'
                  '- **Isolated shell:** Each block runs in a fresh `bash` process starting in '
                  '`Workdir` (`cd` and shell variables do not persist across blocks).\n'
+                 '- **Starting a new session:** To initialize a new session bundle (`0.txt`), pipe '
+                 'a context bundle into `{cmd:run_block}` on `stdin` (`<bundle_cmd> | '
+                 '{cmd:run_block}`).\n'
                  '\n'
                  '### Fixing a Failed Block (`--fix <session>/<target>`) — ALWAYS PREFER OVER '
                  'REWRITING\n'
@@ -451,6 +454,9 @@ EMBEDDED_RULES: dict[str, tuple[str, str]] = {'blocks/bash': ('Bash terminal blo
                  'second time.\n'
                  '- **Isolated shell:** Each block runs in a fresh `pwsh` process starting in '
                  '`Workdir` (`cd` and shell variables do not persist across blocks).\n'
+                 '- **Starting a new session:** To initialize a new session bundle (`0.txt`), pipe '
+                 'a context bundle into `{cmd:run_block}` on `stdin` (`<bundle_cmd> | '
+                 '{cmd:run_block}`).\n'
                  '\n'
                  '### Fixing a Failed Block (`--fix <session>/<target>`) — ALWAYS PREFER OVER '
                  'REWRITING\n'
