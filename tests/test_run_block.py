@@ -726,9 +726,10 @@ class TestRunBlock(unittest.TestCase):
         b_txt = (self.tmp / "sb_sessions/s1/0.txt").read_text(encoding="utf-8")
         self.assertIn("Sandbox: strict (rw: Workdir, /tmp; secrets: hidden; net: on)", b_txt)
 
-        # Toggle sandbox via CLI
+        # Toggle sandbox via CLI (with non-TTY stdin as in CI)
         r_sb_nonet = subprocess.run(
             [str(SCRIPT), "--sandbox", "nonet", "s1"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             cwd=str(proj),
@@ -739,10 +740,25 @@ class TestRunBlock(unittest.TestCase):
         b_txt2 = (self.tmp / "sb_sessions/s1/0.txt").read_text(encoding="utf-8")
         self.assertIn("Sandbox: nonet", b_txt2)
 
+        # Query sandbox status for a named session with non-TTY stdin
+        r_sb_status = subprocess.run(
+            [str(SCRIPT), "--sandbox", "s1"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            cwd=str(proj),
+            env=env,
+            check=False,
+        )
+        self.assertEqual(r_sb_status.returncode, 0, r_sb_status.stderr)
+        self.assertIn("Session: s1", r_sb_status.stdout)
+        self.assertIn("Sandbox: nonet", r_sb_status.stdout)
+
         # Calling --sandbox from inside a running block must be rejected
         env_inside = {**env, "IN_RUN_BLOCK": "1"}
         r_inside = subprocess.run(
             [str(SCRIPT), "--sandbox", "off", "s1"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             cwd=str(proj),

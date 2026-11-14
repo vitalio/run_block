@@ -92,10 +92,16 @@ def main(argv: list[str] | None = None) -> int:
     if args and args[0] == "--clean":
         return cmd_clean(args[1:])
 
-    if args and args[0] == "--sandbox" and sys.stdin.isatty():
+    if args and args[0] == "--sandbox":
         rest_sb = args[1:]
-        if not rest_sb or not any("/" in x for x in rest_sb):
-            return cmd_sandbox(rest_sb)
+        if not any("/" in x or x.startswith("-") for x in rest_sb):
+            has_session_arg = len(rest_sb) >= 2 or (
+                len(rest_sb) == 1
+                and rest_sb[0].lower()
+                not in ("off", "0", "false", "on", "1", "true", "auto", "strict", "nonet", "no-net")
+            )
+            if in_run_block() or has_session_arg or sys.stdin.isatty():
+                return cmd_sandbox(rest_sb)
 
     auto_yes = False
     sandbox_override: str | None = None
@@ -131,6 +137,9 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_sandbox([sandbox_override])
         sys.stderr.write(usage_text())
         return 2
+
+    if sandbox_override is not None and len(args) == 1 and "/" not in args[0] and not args[0].startswith("-"):
+        return cmd_sandbox([sandbox_override, args[0]])
 
     if args[0] in ("--list", "-l"):
         if len(args) > 2:
