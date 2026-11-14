@@ -47,3 +47,8 @@ Review CLI flags, stdin/stdout/stderr separation, and composability of run_block
 - Protect `<session>/0.txt` integrity across block execution (in-memory snapshot + revert on tampering; read-only `BASE_DIR` inside OS sandboxes).
 - Support `Sandbox:` header in `<session>/0.txt`, `RUN_BLOCK_SANDBOX` env setting, and `--sandbox` CLI command/flag (`off`, `strict`, `nonet`) with cross-platform secret env scrubbing, Linux `bwrap`, and macOS `sandbox-exec`.
 - Enhance `src/safety.py` scanner (Python AST `subprocess`/`urllib`/`socket`/`eval`, paths outside `Workdir`, `.git/hooks`, and hidden Bidi/Zero-Width Unicode spoofing) and set `default_yes=False` when `RUN_BLOCK_APPROVE_CMD` exits `2`.
+
+# ✅ [DONE] B1: Parse multiline python3 -c in BLOCK PLAN and prevent RUN_BLOCK closing-fence concatenation — *2026-11-14, fd3d533*
+
+- In src/safety.py (summarize_script_actions and scan_script_risks), detect single-line and multiline python3 -c '...' / "..." invocations, analyze their body via _analyze_python_ast, and report them as a [python] operation instead of per-line [exec] items.
+- Investigate and harden src/rules/blocks/bash.md and runner handling against LLM omitting the newline between RUN_BLOCK and the closing Markdown fence (which causes CommonMark to leave the code fence open).
