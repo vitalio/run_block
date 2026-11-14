@@ -76,6 +76,7 @@ RUN_FIX
 | `RUN_BLOCK_CWD` | `auto` | `auto` (session `Workdir` from `0.txt`, Git root, or `$PWD`), `cwd` (always `$PWD`), or explicit path |
 | `RUN_BLOCK_CLIPBOARD` | `prompt` | `prompt` (`Enter`/`Esc` box), `auto` (copy automatically), `never` |
 | `RUN_BLOCK_HEADLESS` | `0` | Set to `1` (or pass `-y`/`--yes`) for raw stdout protocol without TUI boxes |
+| `RUN_BLOCK_SANDBOX` | `off` | Execution sandbox mode (`off`, `strict`, `nonet`, or custom wrapper prefix; also persisted in `<session>/0.txt` `Sandbox:` header) |
 | `RUN_BLOCK_APPROVE_CMD` | *(none)* | External/LLM validator command receiving `--plan` JSON on `stdin` (`0`=approve, `2`=prompt user with stdout note, other=reject) |
 | `RUN_BLOCK_TOKEN_STATS` | `true` | Show byte size and Claude/GPT/Gemini token counts (`true` / `false`) |
 | `RUN_BLOCK_SHELL` | `bash` | Shell binary (`bash`, `sh`, or `pwsh`/`powershell` on Windows) |
@@ -94,6 +95,7 @@ RUN_FIX
 | `run_block --retry [-y] [session/step]` | Re-run the last (or specified) block |
 | `run_block --list`, `-l [session]` | List sessions and blocks with their status and summary |
 | `run_block --show [session/step]` | Show saved script and output of a block (or `<session>/0` bundle) |
+| `run_block --sandbox [MODE] [session]` | Show or update session sandbox mode (`off`, `strict`, `nonet`) in `<session>/0.txt` |
 | `run_block --clean [--keep N \| --all]` | Prune old session directories in `/tmp/run_block` (default: `--keep 5`) |
 | `run_block --start [--session NAME]` | Read context bundle from `stdin` into `<session>/0.txt` |
 | `run_block --agents` | Print Markdown instructions for AI agents |

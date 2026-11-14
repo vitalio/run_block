@@ -8,8 +8,9 @@
   {prog} --retry [-y] [session/step] Re-run the last (or specified) block
   {prog} --list | -l [session]       List sessions or blocks in a session
   {prog} --show [session/step]       Show script and output of a block (or <session>/0 bundle)
+  {prog} --sandbox [MODE] [session]  Show or set session sandbox mode (off, strict, nonet)
   {prog} --clean [--keep N | --all]  Prune old session directories in {base_dir} (default: --keep 5)
-  {prog} --start [opts]              Start session with explicit options (--session NAME, --force)
+  {prog} --start [opts]              Start session with explicit options (--session NAME, --sandbox MODE, --force)
   {prog} --agents                    Print Markdown instructions for AI agents
   {prog} --update [--force]          Self-update {prog} from GitHub (vitalio/run_block)
   {prog} --check-update              Check if a newer version is available
@@ -51,6 +52,6 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.16.4"
+VERSION = "0.17.0"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"

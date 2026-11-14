@@ -23,7 +23,7 @@ RISK_RULES: list[tuple[str, str, re.Pattern[str]]] = [
         "fs-destructive",
         "recursive or destructive file deletion/overwrite",
         re.compile(
-            r"(?:\brm\s+-[A-Za-z]*(?:r|f)[A-Za-z]*\b|\bshutil\.rmtree\s*\(|\bos\.(?:remove|unlink)\s*\(|\bdd\s+[^\n]*\bof=|\b(?:mkfs|shred|fdisk)\b|>\s*(?:/etc/|~/.ssh/|\$HOME/\.ssh/))"
+            r"(?:\brm\s+-[A-Za-z]*(?:r|f)[A-Za-z]*\b|\bshutil\.rmtree\s*\(|\bos\.(?:remove|unlink)\s*\(|\bdd\s+[^\n]*\bof=|\b(?:mkfs|shred|fdisk)\b|>>?\s*(?:/etc/|~/?\.(?:ssh|bashrc|zshrc|profile|gitconfig)|\$HOME/\.(?:ssh|bashrc|zshrc|profile|gitconfig)|\.git/(?:hooks|config)\b))"
         ),
     ),
     (
@@ -44,8 +44,13 @@ RISK_RULES: list[tuple[str, str, re.Pattern[str]]] = [
         "remote-exec",
         "piping remote content into a shell or eval",
         re.compile(
-            r"(?:\b(?:curl|wget)\b[^\n]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|python3?)\b|\beval\s+)"
+            r"(?:\b(?:curl|wget)\b[^\n]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|python3?)\b|\beval\s+|\bbase64\s+(?:-d|--decode)\b[^\n]*\|\s*(?:sh|bash|zsh|python3?)\b)"
         ),
+    ),
+    (
+        "unicode-spoof",
+        "hidden bidirectional or zero-width Unicode control characters",
+        re.compile(r"[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff\U000e0000-\U000e007f]"),
     ),
 ]
 
@@ -180,12 +185,46 @@ def _analyze_python_ast(
                         "description": "destructive Python call",
                         "snippet": unparsed or f"{mod_name}.{attr}(...)",
                     })
-        elif isinstance(node.func, ast.Name) and node.func.id == "open" and len(node.args) >= 2:
-            mode_node = node.args[1]
-            if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
-                if any(m in mode_node.value for m in ("w", "a", "x")):
-                    target = _extract_py_path_expr(node.args[0], var_map)
-                    _add_unique(writes, target or "open(..., 'w')")
+            elif mod_name == "subprocess" and attr in ("run", "Popen", "call", "check_call", "check_output"):
+                _add_unique(execs, f"subprocess.{attr}")
+                py_risks.append({
+                    "line": start_line_offset + getattr(node, "lineno", 1),
+                    "category": "remote-exec",
+                    "description": "Python subprocess execution",
+                    "snippet": unparsed or f"subprocess.{attr}(...)",
+                })
+            elif mod_name == "os" and attr in ("popen", "execl", "execle", "execlp", "execv", "execve", "execvp", "spawnl", "spawnv"):
+                _add_unique(execs, f"os.{attr}")
+                py_risks.append({
+                    "line": start_line_offset + getattr(node, "lineno", 1),
+                    "category": "remote-exec",
+                    "description": "Python process execution",
+                    "snippet": unparsed or f"os.{attr}(...)",
+                })
+            elif attr in ("urlopen", "urlretrieve") or (mod_name == "socket" and attr in ("connect", "create_connection")):
+                _add_unique(execs, f"{mod_name or 'net'}.{attr}")
+                py_risks.append({
+                    "line": start_line_offset + getattr(node, "lineno", 1),
+                    "category": "net-write",
+                    "description": "Python network call",
+                    "snippet": unparsed or f"{attr}(...)",
+                })
+        elif isinstance(node.func, ast.Name):
+            fn_id = node.func.id
+            if fn_id == "open" and len(node.args) >= 2:
+                mode_node = node.args[1]
+                if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
+                    if any(m in mode_node.value for m in ("w", "a", "x")):
+                        target = _extract_py_path_expr(node.args[0], var_map)
+                        _add_unique(writes, target or "open(..., 'w')")
+            elif fn_id in ("eval", "exec", "__import__"):
+                _add_unique(execs, fn_id)
+                py_risks.append({
+                    "line": start_line_offset + getattr(node, "lineno", 1),
+                    "category": "remote-exec",
+                    "description": f"dynamic Python {fn_id}()",
+                    "snippet": unparsed or f"{fn_id}(...)",
+                })
 
 
 def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> dict[str, object]:
@@ -201,12 +240,37 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
     operation_groups: list[tuple[str, list[tuple[str, str]]]] = []
     cur_group_dir = ""
 
+    def _infer_op_dir(cmd_str: str) -> tuple[str, str]:
+        if cur_group_dir:
+            return cur_group_dir, cmd_str
+        m_git_c = re.match(r"^git\s+-C\s+([^\s]+)\s+(.+)$", cmd_str)
+        if m_git_c:
+            raw_d = m_git_c.group(1).strip("'\"")
+            return raw_d, f"git {m_git_c.group(2)}"
+        tokens = re.findall(r"(?:\$HOME|~|\.\.)/[A-Za-z0-9._-]+(?:/[^\s'\";|&]+)*", cmd_str)
+        if tokens:
+            first_tok = tokens[0]
+            parts = first_tok.split("/")
+            if len(parts) >= 2 and parts[0] in ("$HOME", "~", ".."):
+                ext_dir = f"{parts[0]}/{parts[1]}"
+                try:
+                    expanded = ext_dir.replace("$HOME", str(Path.home())).replace("~", str(Path.home()))
+                    resolved_ext = (wdir / expanded).resolve()
+                    if resolved_ext != wdir.resolve():
+                        short_cmd = cmd_str.replace(f"{ext_dir}/", "").replace(f'"{ext_dir}"', ".").replace(ext_dir, ".")
+                        return ext_dir, short_cmd
+                except Exception:
+                    short_cmd = cmd_str.replace(f"{ext_dir}/", "")
+                    return ext_dir, short_cmd
+        return cur_group_dir, cmd_str
+
     def add_op(tag: str, desc: str) -> None:
         operations.append((tag, desc))
-        if not operation_groups or operation_groups[-1][0] != cur_group_dir:
-            operation_groups.append((cur_group_dir, [(tag, desc)]))
+        g_dir, short_desc = _infer_op_dir(desc) if tag in ("read", "write", "git", "exec") else (cur_group_dir, desc)
+        if not operation_groups or operation_groups[-1][0] != g_dir:
+            operation_groups.append((g_dir, [(tag, short_desc)]))
         else:
-            operation_groups[-1][1].append((tag, desc))
+            operation_groups[-1][1].append((tag, short_desc))
 
     py_blocks = 0
     py_eof: str | None = None
@@ -524,3 +588,185 @@ def cmd_plan(stdin_text: str) -> int:
     sys.stdout.flush()
     return 0 if plan.get("syntax_ok") else 1
 
+
+SAFE_FIX_BUILTINS: dict[str, object] = {
+    "AssertionError": AssertionError,
+    "Exception": Exception,
+    "IndexError": IndexError,
+    "KeyError": KeyError,
+    "RuntimeError": RuntimeError,
+    "TypeError": TypeError,
+    "ValueError": ValueError,
+    "False": False,
+    "None": None,
+    "True": True,
+    "abs": abs,
+    "all": all,
+    "any": any,
+    "bool": bool,
+    "chr": chr,
+    "dict": dict,
+    "enumerate": enumerate,
+    "filter": filter,
+    "float": float,
+    "int": int,
+    "isinstance": isinstance,
+    "len": len,
+    "list": list,
+    "map": map,
+    "max": max,
+    "min": min,
+    "ord": ord,
+    "print": print,
+    "range": range,
+    "repr": repr,
+    "reversed": reversed,
+    "round": round,
+    "set": set,
+    "slice": slice,
+    "sorted": sorted,
+    "str": str,
+    "sum": sum,
+    "tuple": tuple,
+    "zip": zip,
+}
+
+FORBIDDEN_FIX_CALLS: set[str] = {
+    "__import__",
+    "breakpoint",
+    "compile",
+    "delattr",
+    "dir",
+    "eval",
+    "exec",
+    "exit",
+    "getattr",
+    "globals",
+    "hasattr",
+    "input",
+    "locals",
+    "memoryview",
+    "open",
+    "quit",
+    "setattr",
+    "type",
+    "vars",
+}
+
+
+def validate_fix_ast(fix_code: str) -> tuple[bool, str | None]:
+    """Validates that a --fix snippet only performs safe in-memory text/regex transformations."""
+    try:
+        tree = ast.parse(fix_code)
+    except SyntaxError as exc:
+        return False, f"SyntaxError: {exc}"
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return False, "import statements are not allowed in --fix patches"
+        if isinstance(node, (ast.Global, ast.Nonlocal, ast.ClassDef, ast.AsyncFunctionDef)):
+            return False, f"{type(node).__name__} is not allowed in --fix patches"
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+            return False, f"access to private/dunder attribute {node.attr!r} is not allowed in --fix"
+        if isinstance(node, ast.Name) and node.id.startswith("__"):
+            return False, f"access to dunder name {node.id!r} is not allowed in --fix"
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_FIX_CALLS:
+                return False, f"call to {node.func.id}() is not allowed in --fix"
+    return True, None
+
+
+SECRET_ENV_RE = re.compile(
+    r"^(?:.*_(?:API_KEY|SECRET|SECRET_KEY|TOKEN|PASSWORD|PASSWD|PRIVATE_KEY|CREDENTIAL|CREDENTIALS)|"
+    r"AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)|"
+    r"GH_TOKEN|GITHUB_TOKEN|GITLAB_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY)$",
+    re.IGNORECASE,
+)
+
+
+def scrub_child_env(env: dict[str, str], sandbox_mode: str) -> dict[str, str]:
+    norm = normalize_sandbox_mode(sandbox_mode)
+    if norm == "off":
+        return env
+    cleaned = {k: v for k, v in env.items() if not SECRET_ENV_RE.match(k)}
+    if norm == "nonet":
+        cleaned.pop("SSH_AUTH_SOCK", None)
+        cleaned.pop("SSH_AGENT_PID", None)
+    return cleaned
+
+
+def detect_sandbox_backend() -> str:
+    if sys.platform.startswith("linux") and shutil.which("bwrap"):
+        return "bwrap"
+    if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").is_file():
+        return "sandbox-exec"
+    return "env-only"
+
+
+def build_sandbox_exec(
+    exec_cmd: list[str],
+    work_dir: Path,
+    base_dir: Path,
+    sandbox_mode: str,
+) -> list[str]:
+    norm = normalize_sandbox_mode(sandbox_mode)
+    if norm == "off":
+        return exec_cmd
+    if norm not in ("strict", "nonet"):
+        return shlex.split(norm) + list(exec_cmd)
+
+    wdir = work_dir.resolve()
+    bdir = base_dir.resolve()
+    home = Path.home().resolve()
+    secret_rel_subpaths = (".ssh", ".aws", ".gnupg", ".kube", ".config/gh", ".config/gcloud")
+
+    if sys.platform.startswith("linux") and shutil.which("bwrap"):
+        cmd: list[str] = [
+            "bwrap",
+            "--ro-bind", "/", "/",
+            "--dev", "/dev",
+            "--proc", "/proc",
+            "--tmpfs", "/tmp",
+            "--die-with-parent",
+        ]
+        for rel in secret_rel_subpaths:
+            sp = home / rel
+            if sp.is_dir():
+                cmd.extend(["--tmpfs", str(sp)])
+        if bdir.exists():
+            cmd.extend(["--ro-bind", str(bdir), str(bdir)])
+        if wdir.exists():
+            cmd.extend(["--bind", str(wdir), str(wdir)])
+            git_hooks = wdir / ".git" / "hooks"
+            if git_hooks.is_dir():
+                cmd.extend(["--ro-bind", str(git_hooks), str(git_hooks)])
+        if norm == "nonet":
+            cmd.append("--unshare-net")
+        cmd.extend(["--", *exec_cmd])
+        return cmd
+
+    if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").is_file():
+        tmp_real = Path(tempfile.gettempdir()).resolve()
+        rules = [
+            "(version 1)",
+            "(allow default)",
+            '(deny file-write* (subpath "/"))',
+            f'(allow file-write* (subpath "{wdir}"))',
+            f'(allow file-write* (subpath "{tmp_real}"))',
+            '(allow file-write* (subpath "/private/tmp"))',
+            '(allow file-write* (subpath "/dev"))',
+            f'(deny file-write* (subpath "{bdir}"))',
+        ]
+        git_hooks = wdir / ".git" / "hooks"
+        if git_hooks.exists():
+            rules.append(f'(deny file-write* (subpath "{git_hooks}"))')
+        for rel in secret_rel_subpaths:
+            sp = home / rel
+            if sp.exists():
+                rules.append(f'(deny file-read* (subpath "{sp}"))')
+                rules.append(f'(deny file-write* (subpath "{sp}"))')
+        if norm == "nonet":
+            rules.append('(deny network* (remote ip))')
+        profile = " ".join(rules)
+        return ["/usr/bin/sandbox-exec", "-p", profile, *exec_cmd]
+
+    return exec_cmd

@@ -8,8 +8,9 @@
   {prog} --retry [-y] [session/step] Re-run the last (or specified) block
   {prog} --list | -l [session]       List sessions or blocks in a session
   {prog} --show [session/step]       Show script and output of a block (or <session>/0 bundle)
+  {prog} --sandbox [MODE] [session]  Show or set session sandbox mode (off, strict, nonet)
   {prog} --clean [--keep N | --all]  Prune old session directories in {base_dir} (default: --keep 5)
-  {prog} --start [opts]              Start session with explicit options (--session NAME, --force)
+  {prog} --start [opts]              Start session with explicit options (--session NAME, --sandbox MODE, --force)
   {prog} --agents                    Print Markdown instructions for AI agents
   {prog} --update [--force]          Self-update {prog} from GitHub (vitalio/run_block)
   {prog} --check-update              Check if a newer version is available
@@ -51,7 +52,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.16.4"
+VERSION = "0.17.0"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 
@@ -109,6 +110,10 @@ def get_setting(key: str, prog: str | None = None) -> tuple[str, str]:
         if os.environ.get("RUN_BLOCK_SAFETY_RULES") is not None:
             return os.environ["RUN_BLOCK_SAFETY_RULES"].strip(), "env"
         return "", "default"
+    if key == "sandbox":
+        if os.environ.get("RUN_BLOCK_SANDBOX") is not None and os.environ["RUN_BLOCK_SANDBOX"].strip():
+            return normalize_sandbox_mode(os.environ["RUN_BLOCK_SANDBOX"].strip()), "env"
+        return "off", "default"
     if key == "approve_cmd":
         if os.environ.get("RUN_BLOCK_APPROVE_CMD"):
             return os.environ["RUN_BLOCK_APPROVE_CMD"].strip(), "env"
@@ -222,6 +227,17 @@ def _session_bundle_workdir(session_dir: Path | None) -> Path | None:
     return None
 
 
+def normalize_sandbox_mode(raw: str) -> str:
+    v = raw.strip().lower()
+    if v in ("", "0", "off", "false", "no", "none", "disable", "disabled"):
+        return "off"
+    if v in ("1", "on", "true", "yes", "auto", "strict", "bwrap", "seatbelt", "sandbox-exec"):
+        return "strict"
+    if v in ("nonet", "no-net", "offline", "bwrap-nonet", "seatbelt-nonet"):
+        return "nonet"
+    return raw.strip()
+
+
 def get_work_dir(session_dir: Path | None = None) -> Path:
     val, _ = get_setting("work_dir")
     if val.lower() == "cwd":
@@ -232,6 +248,21 @@ def get_work_dir(session_dir: Path | None = None) -> Path:
     if sess_wdir is not None:
         return sess_wdir
     return _git_toplevel_or_cwd()
+
+
+def get_sandbox_mode(session_dir: Path | None = None, override: str | None = None) -> str:
+    if override is not None and override.strip():
+        return normalize_sandbox_mode(override)
+    if os.environ.get("RUN_BLOCK_SANDBOX") is not None and os.environ["RUN_BLOCK_SANDBOX"].strip():
+        return normalize_sandbox_mode(os.environ["RUN_BLOCK_SANDBOX"])
+    if session_dir is not None:
+        headers = parse_bundle_headers(session_dir)
+        raw_sb = headers.get("sandbox") or ""
+        if raw_sb:
+            mode_token = raw_sb.split()[0]
+            return normalize_sandbox_mode(mode_token)
+    val, _ = get_setting("sandbox")
+    return normalize_sandbox_mode(val)
 
 
 def clipboard_mode() -> str:
@@ -486,7 +517,7 @@ RISK_RULES: list[tuple[str, str, re.Pattern[str]]] = [
         "fs-destructive",
         "recursive or destructive file deletion/overwrite",
         re.compile(
-            r"(?:\brm\s+-[A-Za-z]*(?:r|f)[A-Za-z]*\b|\bshutil\.rmtree\s*\(|\bos\.(?:remove|unlink)\s*\(|\bdd\s+[^\n]*\bof=|\b(?:mkfs|shred|fdisk)\b|>\s*(?:/etc/|~/.ssh/|\$HOME/\.ssh/))"
+            r"(?:\brm\s+-[A-Za-z]*(?:r|f)[A-Za-z]*\b|\bshutil\.rmtree\s*\(|\bos\.(?:remove|unlink)\s*\(|\bdd\s+[^\n]*\bof=|\b(?:mkfs|shred|fdisk)\b|>>?\s*(?:/etc/|~/?\.(?:ssh|bashrc|zshrc|profile|gitconfig)|\$HOME/\.(?:ssh|bashrc|zshrc|profile|gitconfig)|\.git/(?:hooks|config)\b))"
         ),
     ),
     (
@@ -507,8 +538,13 @@ RISK_RULES: list[tuple[str, str, re.Pattern[str]]] = [
         "remote-exec",
         "piping remote content into a shell or eval",
         re.compile(
-            r"(?:\b(?:curl|wget)\b[^\n]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|python3?)\b|\beval\s+)"
+            r"(?:\b(?:curl|wget)\b[^\n]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|python3?)\b|\beval\s+|\bbase64\s+(?:-d|--decode)\b[^\n]*\|\s*(?:sh|bash|zsh|python3?)\b)"
         ),
+    ),
+    (
+        "unicode-spoof",
+        "hidden bidirectional or zero-width Unicode control characters",
+        re.compile(r"[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff\U000e0000-\U000e007f]"),
     ),
 ]
 
@@ -643,12 +679,46 @@ def _analyze_python_ast(
                         "description": "destructive Python call",
                         "snippet": unparsed or f"{mod_name}.{attr}(...)",
                     })
-        elif isinstance(node.func, ast.Name) and node.func.id == "open" and len(node.args) >= 2:
-            mode_node = node.args[1]
-            if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
-                if any(m in mode_node.value for m in ("w", "a", "x")):
-                    target = _extract_py_path_expr(node.args[0], var_map)
-                    _add_unique(writes, target or "open(..., 'w')")
+            elif mod_name == "subprocess" and attr in ("run", "Popen", "call", "check_call", "check_output"):
+                _add_unique(execs, f"subprocess.{attr}")
+                py_risks.append({
+                    "line": start_line_offset + getattr(node, "lineno", 1),
+                    "category": "remote-exec",
+                    "description": "Python subprocess execution",
+                    "snippet": unparsed or f"subprocess.{attr}(...)",
+                })
+            elif mod_name == "os" and attr in ("popen", "execl", "execle", "execlp", "execv", "execve", "execvp", "spawnl", "spawnv"):
+                _add_unique(execs, f"os.{attr}")
+                py_risks.append({
+                    "line": start_line_offset + getattr(node, "lineno", 1),
+                    "category": "remote-exec",
+                    "description": "Python process execution",
+                    "snippet": unparsed or f"os.{attr}(...)",
+                })
+            elif attr in ("urlopen", "urlretrieve") or (mod_name == "socket" and attr in ("connect", "create_connection")):
+                _add_unique(execs, f"{mod_name or 'net'}.{attr}")
+                py_risks.append({
+                    "line": start_line_offset + getattr(node, "lineno", 1),
+                    "category": "net-write",
+                    "description": "Python network call",
+                    "snippet": unparsed or f"{attr}(...)",
+                })
+        elif isinstance(node.func, ast.Name):
+            fn_id = node.func.id
+            if fn_id == "open" and len(node.args) >= 2:
+                mode_node = node.args[1]
+                if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
+                    if any(m in mode_node.value for m in ("w", "a", "x")):
+                        target = _extract_py_path_expr(node.args[0], var_map)
+                        _add_unique(writes, target or "open(..., 'w')")
+            elif fn_id in ("eval", "exec", "__import__"):
+                _add_unique(execs, fn_id)
+                py_risks.append({
+                    "line": start_line_offset + getattr(node, "lineno", 1),
+                    "category": "remote-exec",
+                    "description": f"dynamic Python {fn_id}()",
+                    "snippet": unparsed or f"{fn_id}(...)",
+                })
 
 
 def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> dict[str, object]:
@@ -664,12 +734,37 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
     operation_groups: list[tuple[str, list[tuple[str, str]]]] = []
     cur_group_dir = ""
 
+    def _infer_op_dir(cmd_str: str) -> tuple[str, str]:
+        if cur_group_dir:
+            return cur_group_dir, cmd_str
+        m_git_c = re.match(r"^git\s+-C\s+([^\s]+)\s+(.+)$", cmd_str)
+        if m_git_c:
+            raw_d = m_git_c.group(1).strip("'\"")
+            return raw_d, f"git {m_git_c.group(2)}"
+        tokens = re.findall(r"(?:\$HOME|~|\.\.)/[A-Za-z0-9._-]+(?:/[^\s'\";|&]+)*", cmd_str)
+        if tokens:
+            first_tok = tokens[0]
+            parts = first_tok.split("/")
+            if len(parts) >= 2 and parts[0] in ("$HOME", "~", ".."):
+                ext_dir = f"{parts[0]}/{parts[1]}"
+                try:
+                    expanded = ext_dir.replace("$HOME", str(Path.home())).replace("~", str(Path.home()))
+                    resolved_ext = (wdir / expanded).resolve()
+                    if resolved_ext != wdir.resolve():
+                        short_cmd = cmd_str.replace(f"{ext_dir}/", "").replace(f'"{ext_dir}"', ".").replace(ext_dir, ".")
+                        return ext_dir, short_cmd
+                except Exception:
+                    short_cmd = cmd_str.replace(f"{ext_dir}/", "")
+                    return ext_dir, short_cmd
+        return cur_group_dir, cmd_str
+
     def add_op(tag: str, desc: str) -> None:
         operations.append((tag, desc))
-        if not operation_groups or operation_groups[-1][0] != cur_group_dir:
-            operation_groups.append((cur_group_dir, [(tag, desc)]))
+        g_dir, short_desc = _infer_op_dir(desc) if tag in ("read", "write", "git", "exec") else (cur_group_dir, desc)
+        if not operation_groups or operation_groups[-1][0] != g_dir:
+            operation_groups.append((g_dir, [(tag, short_desc)]))
         else:
-            operation_groups[-1][1].append((tag, desc))
+            operation_groups[-1][1].append((tag, short_desc))
 
     py_blocks = 0
     py_eof: str | None = None
@@ -988,6 +1083,189 @@ def cmd_plan(stdin_text: str) -> int:
     return 0 if plan.get("syntax_ok") else 1
 
 
+SAFE_FIX_BUILTINS: dict[str, object] = {
+    "AssertionError": AssertionError,
+    "Exception": Exception,
+    "IndexError": IndexError,
+    "KeyError": KeyError,
+    "RuntimeError": RuntimeError,
+    "TypeError": TypeError,
+    "ValueError": ValueError,
+    "False": False,
+    "None": None,
+    "True": True,
+    "abs": abs,
+    "all": all,
+    "any": any,
+    "bool": bool,
+    "chr": chr,
+    "dict": dict,
+    "enumerate": enumerate,
+    "filter": filter,
+    "float": float,
+    "int": int,
+    "isinstance": isinstance,
+    "len": len,
+    "list": list,
+    "map": map,
+    "max": max,
+    "min": min,
+    "ord": ord,
+    "print": print,
+    "range": range,
+    "repr": repr,
+    "reversed": reversed,
+    "round": round,
+    "set": set,
+    "slice": slice,
+    "sorted": sorted,
+    "str": str,
+    "sum": sum,
+    "tuple": tuple,
+    "zip": zip,
+}
+
+FORBIDDEN_FIX_CALLS: set[str] = {
+    "__import__",
+    "breakpoint",
+    "compile",
+    "delattr",
+    "dir",
+    "eval",
+    "exec",
+    "exit",
+    "getattr",
+    "globals",
+    "hasattr",
+    "input",
+    "locals",
+    "memoryview",
+    "open",
+    "quit",
+    "setattr",
+    "type",
+    "vars",
+}
+
+
+def validate_fix_ast(fix_code: str) -> tuple[bool, str | None]:
+    """Validates that a --fix snippet only performs safe in-memory text/regex transformations."""
+    try:
+        tree = ast.parse(fix_code)
+    except SyntaxError as exc:
+        return False, f"SyntaxError: {exc}"
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return False, "import statements are not allowed in --fix patches"
+        if isinstance(node, (ast.Global, ast.Nonlocal, ast.ClassDef, ast.AsyncFunctionDef)):
+            return False, f"{type(node).__name__} is not allowed in --fix patches"
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+            return False, f"access to private/dunder attribute {node.attr!r} is not allowed in --fix"
+        if isinstance(node, ast.Name) and node.id.startswith("__"):
+            return False, f"access to dunder name {node.id!r} is not allowed in --fix"
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_FIX_CALLS:
+                return False, f"call to {node.func.id}() is not allowed in --fix"
+    return True, None
+
+
+SECRET_ENV_RE = re.compile(
+    r"^(?:.*_(?:API_KEY|SECRET|SECRET_KEY|TOKEN|PASSWORD|PASSWD|PRIVATE_KEY|CREDENTIAL|CREDENTIALS)|"
+    r"AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)|"
+    r"GH_TOKEN|GITHUB_TOKEN|GITLAB_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY)$",
+    re.IGNORECASE,
+)
+
+
+def scrub_child_env(env: dict[str, str], sandbox_mode: str) -> dict[str, str]:
+    norm = normalize_sandbox_mode(sandbox_mode)
+    if norm == "off":
+        return env
+    cleaned = {k: v for k, v in env.items() if not SECRET_ENV_RE.match(k)}
+    if norm == "nonet":
+        cleaned.pop("SSH_AUTH_SOCK", None)
+        cleaned.pop("SSH_AGENT_PID", None)
+    return cleaned
+
+
+def detect_sandbox_backend() -> str:
+    if sys.platform.startswith("linux") and shutil.which("bwrap"):
+        return "bwrap"
+    if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").is_file():
+        return "sandbox-exec"
+    return "env-only"
+
+
+def build_sandbox_exec(
+    exec_cmd: list[str],
+    work_dir: Path,
+    base_dir: Path,
+    sandbox_mode: str,
+) -> list[str]:
+    norm = normalize_sandbox_mode(sandbox_mode)
+    if norm == "off":
+        return exec_cmd
+    if norm not in ("strict", "nonet"):
+        return shlex.split(norm) + list(exec_cmd)
+
+    wdir = work_dir.resolve()
+    bdir = base_dir.resolve()
+    home = Path.home().resolve()
+    secret_rel_subpaths = (".ssh", ".aws", ".gnupg", ".kube", ".config/gh", ".config/gcloud")
+
+    if sys.platform.startswith("linux") and shutil.which("bwrap"):
+        cmd: list[str] = [
+            "bwrap",
+            "--ro-bind", "/", "/",
+            "--dev", "/dev",
+            "--proc", "/proc",
+            "--tmpfs", "/tmp",
+            "--die-with-parent",
+        ]
+        for rel in secret_rel_subpaths:
+            sp = home / rel
+            if sp.is_dir():
+                cmd.extend(["--tmpfs", str(sp)])
+        if bdir.exists():
+            cmd.extend(["--ro-bind", str(bdir), str(bdir)])
+        if wdir.exists():
+            cmd.extend(["--bind", str(wdir), str(wdir)])
+            git_hooks = wdir / ".git" / "hooks"
+            if git_hooks.is_dir():
+                cmd.extend(["--ro-bind", str(git_hooks), str(git_hooks)])
+        if norm == "nonet":
+            cmd.append("--unshare-net")
+        cmd.extend(["--", *exec_cmd])
+        return cmd
+
+    if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").is_file():
+        tmp_real = Path(tempfile.gettempdir()).resolve()
+        rules = [
+            "(version 1)",
+            "(allow default)",
+            '(deny file-write* (subpath "/"))',
+            f'(allow file-write* (subpath "{wdir}"))',
+            f'(allow file-write* (subpath "{tmp_real}"))',
+            '(allow file-write* (subpath "/private/tmp"))',
+            '(allow file-write* (subpath "/dev"))',
+            f'(deny file-write* (subpath "{bdir}"))',
+        ]
+        git_hooks = wdir / ".git" / "hooks"
+        if git_hooks.exists():
+            rules.append(f'(deny file-write* (subpath "{git_hooks}"))')
+        for rel in secret_rel_subpaths:
+            sp = home / rel
+            if sp.exists():
+                rules.append(f'(deny file-read* (subpath "{sp}"))')
+                rules.append(f'(deny file-write* (subpath "{sp}"))')
+        if norm == "nonet":
+            rules.append('(deny network* (remote ip))')
+        profile = " ".join(rules)
+        return ["/usr/bin/sandbox-exec", "-p", profile, *exec_cmd]
+
+    return exec_cmd
+
+
 def open_tty():
     tty_in_name = "CONIN$" if os.name == "nt" else "/dev/tty"
     tty_out_name = "CONOUT$" if os.name == "nt" else "/dev/tty"
@@ -1080,9 +1358,13 @@ def format_safety_box(
     if summary:
         wdir = str(summary.get("work_dir") or "")
         cd_dirs = list(summary.get("cd_dirs") or [])
+        sb_mode = str(summary.get("sandbox") or "off")
         if wdir:
             wline = f"Workdir: {wdir}" + (f"  (cd -> {', '.join(cd_dirs)})" if cd_dirs else "")
             content_lines.extend(textwrap.wrap(wline, width=max_row_len) or [wline])
+        if sb_mode and sb_mode != "off":
+            sb_line = f"Sandbox: {format_sandbox_header(sb_mode)}"
+            content_lines.extend(textwrap.wrap(sb_line, width=max_row_len) or [sb_line])
         if meta_str:
             content_lines.append(f"Script: {meta_str}")
         ops = list(summary.get("operations") or [])
@@ -1296,14 +1578,15 @@ def confirm_execution(
         return True, ""
     findings = scan_script_risks(script_text)
     note = ""
+    approve_decision = ""
     approve_cmd, _ = get_setting("approve_cmd")
     if approve_cmd:
         wdir = Path(str(summary.get("work_dir"))) if summary and summary.get("work_dir") else get_work_dir()
         plan_obj = analyze_script(script_text, work_dir=wdir, label=label, check_syntax=False)
-        decision, note = run_approve_cmd(approve_cmd, label, script_text, plan_obj, script_path=script_path)
-        if decision == "reject":
+        approve_decision, note = run_approve_cmd(approve_cmd, label, script_text, plan_obj, script_path=script_path)
+        if approve_decision == "reject":
             return False, (note or "rejected by RUN_BLOCK_APPROVE_CMD")
-        if decision == "approve":
+        if approve_decision == "approve":
             if findings and (auto_yes or not sys.stdout.isatty() or no_clipboard()):
                 for f in findings:
                     sys.stdout.write(f"[{label}] safety warning [{f['category']}]: {f['snippet']}\n")
@@ -1315,7 +1598,7 @@ def confirm_execution(
                 sys.stdout.write(f"[{label}] safety warning [{f['category']}]: {f['snippet']}\n")
             sys.stdout.flush()
         return True, note
-    default_yes = (len(findings) == 0)
+    default_yes = (len(findings) == 0 and approve_decision != "prompt")
     box, inner_width, cursor_offset = format_safety_box(
         label, findings, default_yes=default_yes, summary=summary, note=note
     )
@@ -1606,7 +1889,7 @@ def next_session_name(base: Path) -> str:
     return f"s{n}"
 
 
-def start_session(name: str | None = None, force: bool = False) -> Path:
+def start_session(name: str | None = None, force: bool = False, sandbox_mode: str | None = None) -> Path:
     base = ensure_base()
     if not name:
         name = next_session_name(base)
@@ -1636,7 +1919,7 @@ def start_session(name: str | None = None, force: bool = False) -> Path:
                     raise SystemExit(f"{prog_name()}: aborted")
         shutil.rmtree(sdir)
     sdir.mkdir(mode=0o700, parents=True)
-    ensure_session_bundle(sdir)
+    ensure_session_bundle(sdir, sandbox_mode=sandbox_mode)
     return sdir
 
 
@@ -1709,9 +1992,12 @@ def run_script(
     header_lines: list[str] | None = None,
     cleanup_on_abort: list[Path] | None = None,
     auto_yes: bool = False,
+    sandbox_override: str | None = None,
 ) -> int:
     headless = auto_yes or os.environ.get("RUN_BLOCK_HEADLESS") == "1"
-    work_dir = get_work_dir(script_path.parent)
+    sdir = script_path.parent
+    work_dir = get_work_dir(sdir)
+    sandbox_mode = get_sandbox_mode(sdir, override=sandbox_override)
     shell_bin, _ = get_setting("shell")
     is_ps = _is_powershell(shell_bin)
     script_text = script_path.read_text(encoding="utf-8")
@@ -1772,6 +2058,7 @@ def run_script(
 
     aborted_marker = script_path.with_suffix(".aborted")
     summary_obj = summarize_script_actions(script_text, work_dir=work_dir)
+    summary_obj["sandbox"] = sandbox_mode
     approved, abort_reason = confirm_execution(
         label, script_text, summary=summary_obj, script_path=script_path, auto_yes=headless
     )
@@ -1817,7 +2104,10 @@ def run_script(
                 os.close(slave_fd)
                 slave_fd = None
 
-    child_env = {**os.environ, "IN_RUN_BLOCK": "1"}
+    bundle_file = sdir / "0.txt"
+    bundle_snapshot = bundle_file.read_bytes() if bundle_file.is_file() else None
+    child_env = scrub_child_env({**os.environ, "IN_RUN_BLOCK": "1"}, sandbox_mode)
+    exec_cmd = build_sandbox_exec(exec_cmd, work_dir=work_dir, base_dir=ensure_base(), sandbox_mode=sandbox_mode)
     if master_fd is not None and slave_fd is not None:
         try:
             proc = subprocess.Popen(
@@ -1870,6 +2160,13 @@ def run_script(
             sys.stdout.flush()
         proc.stdout.close()
         rc = proc.wait()
+    if bundle_snapshot is not None:
+        if not bundle_file.is_file() or bundle_file.read_bytes() != bundle_snapshot:
+            write_private(bundle_file, bundle_snapshot.decode("utf-8", "replace"), overwrite=True)
+            warn_msg = f"\n[{label}] SECURITY WARNING: block attempted to modify {bundle_file.name} (reverted)\n"
+            log_chunks.append(warn_msg)
+            sys.stdout.write(warn_msg)
+            sys.stdout.flush()
     if log_chunks and not log_chunks[-1].endswith("\n"):
         log_chunks.append("\n")
         sys.stdout.write("\n")
@@ -1891,7 +2188,9 @@ def run_script(
     return rc
 
 
-def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
+def cmd_normal(
+    ref: str, payload: str, auto_yes: bool = False, sandbox_override: str | None = None
+) -> int:
     headless = auto_yes or os.environ.get("RUN_BLOCK_HEADLESS") == "1"
     session, step = parse_ref(ref, allow_fix_step=False)
     step_num = int(step)
@@ -1899,7 +2198,7 @@ def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
         raise SystemExit(f"{prog_name()}: step number must be >= 1")
     sdir = ensure_base() / session
     sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    ensure_session_bundle(sdir)
+    ensure_session_bundle(sdir, sandbox_mode=sandbox_override)
     label = f"{session}/{step}"
     script_path = _find_step_script(sdir, step)
     out_path = sdir / f"{step}.txt"
@@ -1955,10 +2254,19 @@ def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
         return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: empty script on stdin", headless=headless)
 
     write_private(script_path, payload, overwrite=overwrite)
-    return run_script(label, script_path, out_path, cleanup_on_abort=[script_path], auto_yes=auto_yes)
+    return run_script(
+        label,
+        script_path,
+        out_path,
+        cleanup_on_abort=[script_path],
+        auto_yes=auto_yes,
+        sandbox_override=sandbox_override,
+    )
 
 
-def cmd_fix(ref: str, fix_code: str, auto_yes: bool = False) -> int:
+def cmd_fix(
+    ref: str, fix_code: str, auto_yes: bool = False, sandbox_override: str | None = None
+) -> int:
     headless = auto_yes or os.environ.get("RUN_BLOCK_HEADLESS") == "1"
     session, target = parse_ref(ref, allow_fix_step=True)
     sdir = ensure_base() / session
@@ -1985,12 +2293,29 @@ def cmd_fix(ref: str, fix_code: str, auto_yes: bool = False) -> int:
     if not fix_code.strip():
         return not_run_exit(label, sdir, new_step, out_path, f"[{label}] NOT RUN: empty fix on stdin")
 
+    ast_ok, ast_err = validate_fix_ast(fix_code)
+    if not ast_ok:
+        return not_run_exit(
+            label,
+            sdir,
+            new_step,
+            out_path,
+            f"[{label}] NOT RUN: unsafe construct in --fix ({ast_err})",
+            headless=headless,
+        )
     orig_text = src_script.read_text(encoding="utf-8")
-    ns: dict[str, object] = {"text": orig_text, "re": re}
+    ns: dict[str, object] = {"__builtins__": dict(SAFE_FIX_BUILTINS), "text": orig_text, "re": re}
     try:
         exec(compile(fix_code, str(fix_path), "exec"), ns)
     except Exception as exc:
-        return not_run_exit(label, sdir, new_step, out_path, f"[{label}] NOT RUN: fix raised {type(exc).__name__}: {exc}")
+        return not_run_exit(
+            label,
+            sdir,
+            new_step,
+            out_path,
+            f"[{label}] NOT RUN: fix raised {type(exc).__name__}: {exc}",
+            headless=headless,
+        )
 
     new_text = ns.get("text")
     if not isinstance(new_text, str):
@@ -2009,7 +2334,15 @@ def cmd_fix(ref: str, fix_code: str, auto_yes: bool = False) -> int:
         )
     )
     header = [f"[{label}] patched {target}{ext} -> {new_step}{ext}:\n", diff]
-    return run_script(label, script_path, out_path, header_lines=header, cleanup_on_abort=[fix_path, script_path], auto_yes=auto_yes)
+    return run_script(
+        label,
+        script_path,
+        out_path,
+        header_lines=header,
+        cleanup_on_abort=[fix_path, script_path],
+        auto_yes=auto_yes,
+        sandbox_override=sandbox_override,
+    )
 
 
 def _step_sort_key(stem: str) -> tuple[int, int]:
@@ -2117,7 +2450,9 @@ def cmd_show(ref: str | None = None) -> int:
     return 0
 
 
-def cmd_retry(ref: str | None = None, auto_yes: bool = False) -> int:
+def cmd_retry(
+    ref: str | None = None, auto_yes: bool = False, sandbox_override: str | None = None
+) -> int:
     if ref:
         session, step = parse_ref(ref, allow_fix_step=True)
     else:
@@ -2129,7 +2464,66 @@ def cmd_retry(ref: str | None = None, auto_yes: bool = False) -> int:
         raise SystemExit(f"{prog_name()}: block {session}/{step} not found ({script_path})")
     out_path.unlink(missing_ok=True)
     (sdir / f"{step}.aborted").unlink(missing_ok=True)
-    return run_script(f"{session}/{step}", script_path, out_path, cleanup_on_abort=[], auto_yes=auto_yes)
+    return run_script(
+        f"{session}/{step}",
+        script_path,
+        out_path,
+        cleanup_on_abort=[],
+        auto_yes=auto_yes,
+        sandbox_override=sandbox_override,
+    )
+
+
+def _find_latest_session_dir() -> Path | None:
+    base = ensure_base()
+    sdirs = sorted(
+        [p for p in base.iterdir() if p.is_dir()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return sdirs[0] if sdirs else None
+
+
+def cmd_sandbox(argv: list[str]) -> int:
+    prog = prog_name()
+    if in_run_block():
+        sys.stderr.write(f"{prog}: cannot modify session sandbox settings from inside a running block\n")
+        return 2
+    mode_arg: str | None = None
+    session_arg: str | None = None
+    for a in argv:
+        if re.fullmatch(r"s\d+", a) and session_arg is None and mode_arg is not None:
+            session_arg = a
+        elif mode_arg is None and a.lower() in ("off", "0", "false", "on", "1", "true", "auto", "strict", "nonet", "no-net"):
+            mode_arg = normalize_sandbox_mode(a)
+        elif session_arg is None and re.fullmatch(r"[A-Za-z0-9._-]+", a) and (ensure_base() / a).is_dir():
+            session_arg = a
+        elif mode_arg is None:
+            mode_arg = normalize_sandbox_mode(a)
+        else:
+            raise SystemExit(f"{prog}: usage: {prog} --sandbox [off|strict|nonet] [session]")
+
+    base = ensure_base()
+    sdir = (base / session_arg) if session_arg else _find_latest_session_dir()
+    backend = detect_sandbox_backend()
+    if mode_arg is None:
+        cur_mode = get_sandbox_mode(sdir)
+        sess_lbl = sdir.name if sdir is not None else "(no active session)"
+        sys.stdout.write(
+            f"Session: {sess_lbl}\n"
+            f"Sandbox: {format_sandbox_header(cur_mode)}\n"
+            f"Backend: {backend}\n"
+        )
+        return 0
+    if sdir is None:
+        sdir = start_session(session_arg, sandbox_mode=mode_arg)
+    else:
+        sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        set_session_bundle_header(sdir, "Sandbox", format_sandbox_header(mode_arg))
+    sys.stdout.write(
+        f"Updated {sdir.name}/0.txt -> Sandbox: {format_sandbox_header(mode_arg)} (backend: {backend})\n"
+    )
+    return 0
 
 
 def _dir_size_bytes(path: Path) -> int:
@@ -2226,19 +2620,34 @@ def cmd_clean(argv: list[str]) -> int:
     return 0
 
 
+def format_sandbox_header(mode: str) -> str:
+    norm = normalize_sandbox_mode(mode)
+    if norm == "strict":
+        return "strict (rw: Workdir, /tmp; secrets: hidden; net: on)"
+    if norm == "nonet":
+        return "nonet (rw: Workdir, /tmp; secrets: hidden; net: off)"
+    if norm == "off":
+        return "off"
+    return norm
+
+
 def format_start_bundle(
     session_name: str,
     stdin_body: str = "",
     work_dir: Path | None = None,
     now: datetime | None = None,
+    sandbox_mode: str | None = None,
 ) -> dict[str, object]:
     wdir = (work_dir if work_dir is not None else get_work_dir()).resolve()
+    sb_mode = get_sandbox_mode(override=sandbox_mode)
+    sb_hdr = format_sandbox_header(sb_mode)
     ts = (now or datetime.now().astimezone()).strftime("%Y-%m-%d %H:%M %Z").strip()
     clean_body = stdin_body.strip()
     bundle_header_lines = [
         f"Session: {session_name}",
         f"Next-Block: {session_name}/1",
         f"Workdir: {wdir}",
+        f"Sandbox: {sb_hdr}",
         f"Date: {ts}",
     ]
     bundle_header_text = "\n".join(bundle_header_lines) + "\n"
@@ -2250,6 +2659,7 @@ def format_start_bundle(
         f"Next-Block: {session_name}/1",
         f"Date: {ts}",
         f"Workdir: {wdir}",
+        f"Sandbox: {sb_hdr}",
         f"Total: {total_lines} lines (~{total_tokens} tokens)",
     ]
     return {
@@ -2257,18 +2667,62 @@ def format_start_bundle(
         "full": full_text,
         "total_lines": total_lines,
         "total_tokens": total_tokens,
+        "sandbox": sb_mode,
     }
 
 
-def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
+def set_session_bundle_header(sdir: Path, key: str, value: str) -> None:
+    bundle_path = ensure_session_bundle(sdir)
+    text = bundle_path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    header_end = 0
+    target_idx = -1
+    key_lower = key.lower()
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("====="):
+            header_end = idx
+            break
+        m = BUNDLE_HEADER_RE.match(stripped)
+        if not m:
+            header_end = idx
+            break
+        k = re.sub(r"\s+", "-", m.group(1).strip().lower())
+        if k == key_lower:
+            target_idx = idx
+        header_end = idx + 1
+    new_line = f"{key}: {value}"
+    if target_idx >= 0:
+        lines[target_idx] = new_line
+    else:
+        insert_at = max(0, header_end - 1) if header_end > 0 else 0
+        lines.insert(insert_at, new_line)
+    write_private(bundle_path, "\n".join(lines) + "\n", overwrite=True)
+
+
+def cmd_start(argv: list[str], stdin_text: str | None = None, sandbox_override: str | None = None) -> int:
     prog = prog_name()
     force = False
     session_arg: str | None = None
+    sb_arg: str | None = sandbox_override
     i = 0
     while i < len(argv):
         a = argv[i]
         if a == "--force":
             force = True
+            i += 1
+        elif a == "--no-sandbox":
+            sb_arg = "off"
+            i += 1
+        elif a == "--sandbox":
+            if i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                sb_arg = argv[i + 1]
+                i += 2
+            else:
+                sb_arg = "strict"
+                i += 1
+        elif a.startswith("--sandbox="):
+            sb_arg = a.split("=", 1)[1] or "strict"
             i += 1
         elif a == "--session":
             if i + 1 >= len(argv):
@@ -2276,13 +2730,17 @@ def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
             session_arg = argv[i + 1]
             i += 2
         elif a.startswith("-"):
-            raise SystemExit(f"{prog}: usage: <command> | {prog} [--start] [--session NAME] [--force]")
+            raise SystemExit(
+                f"{prog}: usage: <command> | {prog} [--start] [--session NAME] [--sandbox [MODE]] [--force]"
+            )
         else:
             if session_arg is None and re.fullmatch(r"s\d+", a):
                 session_arg = a
                 i += 1
             else:
-                raise SystemExit(f"{prog}: usage: <command> | {prog} [--start] [--session NAME] [--force]")
+                raise SystemExit(
+                    f"{prog}: usage: <command> | {prog} [--start] [--session NAME] [--sandbox [MODE]] [--force]"
+                )
 
     if stdin_text is None:
         if sys.stdin.isatty():
@@ -2292,17 +2750,20 @@ def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
             return 2
         stdin_text = sys.stdin.read()
 
-    sdir = start_session(session_arg, force=force)
+    sdir = start_session(session_arg, force=force, sandbox_mode=sb_arg)
     session_name = sdir.name
     bundle_path = sdir / "0.txt"
-    res = format_start_bundle(session_name=session_name, stdin_body=stdin_text)
+    res = format_start_bundle(session_name=session_name, stdin_body=stdin_text, sandbox_mode=sb_arg)
     write_private(bundle_path, str(res["full"]), overwrite=True)
     wdir = get_work_dir(sdir).resolve()
+    sb_mode = get_sandbox_mode(sdir, override=sb_arg)
     body_lines = [
         f"Next-Block: {session_name}/1",
         f"Workdir: {wdir}",
-        f"Bundle: {bundle_path}",
     ]
+    if sb_mode != "off":
+        body_lines.append(f"Sandbox: {format_sandbox_header(sb_mode)}")
+    body_lines.append(f"Bundle: {bundle_path}")
     label0 = f"{session_name}/0"
     if not in_run_block() and sys.stdout.isatty() and clipboard_mode() == "prompt" and clipboard_command(bundle_path) is not None:
         offer_clipboard_copy(label0, bundle_path, ok=True, rc=0, title_kind="START BUNDLE", extra_lines=body_lines)
@@ -2315,10 +2776,14 @@ def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
     return 0
 
 
-def ensure_session_bundle(sdir: Path, work_dir: Path | None = None) -> Path:
+def ensure_session_bundle(
+    sdir: Path, work_dir: Path | None = None, sandbox_mode: str | None = None
+) -> Path:
     bundle_path = sdir / "0.txt"
     if not bundle_path.is_file():
-        res = format_start_bundle(session_name=sdir.name, stdin_body="", work_dir=work_dir)
+        res = format_start_bundle(
+            session_name=sdir.name, stdin_body="", work_dir=work_dir, sandbox_mode=sandbox_mode
+        )
         write_private(bundle_path, str(res["full"]), overwrite=True)
     return bundle_path
 
@@ -2417,18 +2882,43 @@ def main(argv: list[str] | None = None) -> int:
     if args and args[0] == "--clean":
         return cmd_clean(args[1:])
 
+    if args and args[0] == "--sandbox" and sys.stdin.isatty():
+        rest_sb = args[1:]
+        if not rest_sb or not any("/" in x for x in rest_sb):
+            return cmd_sandbox(rest_sb)
+
     auto_yes = False
+    sandbox_override: str | None = None
     filtered: list[str] = []
-    for a in args:
+    i = 0
+    while i < len(args):
+        a = args[i]
         if a in ("-y", "--yes", "--headless"):
             auto_yes = True
+            i += 1
+        elif a == "--no-sandbox":
+            sandbox_override = "off"
+            i += 1
+        elif a.startswith("--sandbox="):
+            sandbox_override = a.split("=", 1)[1] or "strict"
+            i += 1
+        elif a == "--sandbox":
+            if i + 1 < len(args) and args[i + 1].lower() in ("off", "0", "false", "on", "1", "true", "auto", "strict", "nonet", "no-net"):
+                sandbox_override = args[i + 1]
+                i += 2
+            else:
+                sandbox_override = "strict"
+                i += 1
         else:
             filtered.append(a)
+            i += 1
     args = filtered
 
     if not args:
         if not sys.stdin.isatty():
-            return cmd_start([])
+            return cmd_start([], sandbox_override=sandbox_override)
+        if sandbox_override is not None:
+            return cmd_sandbox([sandbox_override])
         sys.stderr.write(usage_text())
         return 2
 
@@ -2445,7 +2935,9 @@ def main(argv: list[str] | None = None) -> int:
     if args[0] in ("--retry", "--rerun"):
         if len(args) > 2:
             raise SystemExit(f"{prog}: usage: {prog} --retry [-y] [session/step]")
-        return cmd_retry(args[1] if len(args) == 2 else None, auto_yes=auto_yes)
+        return cmd_retry(
+            args[1] if len(args) == 2 else None, auto_yes=auto_yes, sandbox_override=sandbox_override
+        )
 
     if args[0] == "--check-update":
         if len(args) != 1:
@@ -2460,18 +2952,22 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_update(force=force)
 
     if args[0] in ("--start", "--bundle"):
-        return cmd_start(args[1:])
+        return cmd_start(args[1:], sandbox_override=sandbox_override)
 
     if args[0] == "--fix":
         if len(args) != 2:
             raise SystemExit(f"{prog}: usage: {prog} --fix [-y] <session>/<target>")
-        return cmd_fix(args[1], sys.stdin.read(), auto_yes=auto_yes)
+        return cmd_fix(
+            args[1], sys.stdin.read(), auto_yes=auto_yes, sandbox_override=sandbox_override
+        )
 
     if len(args) != 1 or args[0].startswith("-"):
         raise SystemExit(
             f"{prog}: usage: {prog} [-y] <session>/<step> (or pipe bundle to '{prog}' to start a session; see --help)"
         )
-    return cmd_normal(args[0], sys.stdin.read(), auto_yes=auto_yes)
+    return cmd_normal(
+        args[0], sys.stdin.read(), auto_yes=auto_yes, sandbox_override=sandbox_override
+    )
 
 
 if __name__ == "__main__":

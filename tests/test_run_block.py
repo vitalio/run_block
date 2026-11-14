@@ -46,6 +46,7 @@ class TestRunBlock(unittest.TestCase):
                 "RUN_BLOCK_SAFETY_RULES",
                 "RUN_BLOCK_APPROVE_CMD",
                 "RUN_BLOCK_HEADLESS",
+                "RUN_BLOCK_SANDBOX",
             )
         }
         os.environ["RUN_BLOCK_NO_CLIPBOARD"] = "1"
@@ -598,6 +599,124 @@ class TestRunBlock(unittest.TestCase):
         stripped_lines = [l.strip("│ ") for l in box_cd.splitlines()]
         idx_var = stripped_lines.index("/var:")
         self.assertEqual(stripped_lines[idx_var - 1], "")
+
+
+    def test_fix_ast_validation_and_bundle_tamper_revert(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.mod.cmd_normal("s1/1", "echo safe_step_1\n")
+        # 1. Unsafe --fix constructs must be rejected before exec()
+        marker = self.tmp / "pwned.txt"
+        for unsafe_fix in (
+            f"import os\nos.system('touch {marker}')\n",
+            f"__import__('os').system('touch {marker}')\n",
+            "text = text.__class__.__name__\n",
+            f"open('{marker}', 'w').write('x')\n",
+        ):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = self.mod.cmd_fix("s1/1", unsafe_fix, auto_yes=True)
+            self.assertEqual(rc, 2)
+            self.assertIn("NOT RUN: unsafe construct in --fix", buf.getvalue())
+            self.assertFalse(marker.exists())
+            (self.tmp / "s1/1_1.txt").unlink(missing_ok=True)
+            (self.tmp / "s1/1_1.error.txt").unlink(missing_ok=True)
+
+        # 2. Tampering with 0.txt inside a running block must be automatically reverted
+        bundle_file = self.tmp / "s1/0.txt"
+        orig_bundle = bundle_file.read_text(encoding="utf-8")
+        buf2 = io.StringIO()
+        with contextlib.redirect_stdout(buf2):
+            rc2 = self.mod.cmd_normal(
+                "s1/2",
+                f"echo 'Sandbox: off' > {bundle_file}\n",
+                auto_yes=True,
+            )
+        self.assertEqual(rc2, 0)
+        self.assertEqual(bundle_file.read_text(encoding="utf-8"), orig_bundle)
+        self.assertIn("SECURITY WARNING: block attempted to modify 0.txt (reverted)", buf2.getvalue())
+
+    def test_sandbox_header_cli_and_env_scrubbing(self):
+        proj = self.tmp / "sb_proj"
+        proj.mkdir()
+        env = {
+            **os.environ,
+            "RUN_BLOCK_DIR": str(self.tmp / "sb_sessions"),
+            "RUN_BLOCK_CWD": str(proj),
+            "OPENAI_API_KEY": "sk-secret-test-key",
+            "GITHUB_TOKEN": "ghp-secret-token",
+        }
+        r_start = subprocess.run(
+            [str(SCRIPT), "--start", "--session", "s1", "--sandbox", "strict"],
+            input="Context body\n",
+            capture_output=True,
+            text=True,
+            cwd=str(proj),
+            env=env,
+            check=False,
+        )
+        self.assertEqual(r_start.returncode, 0, r_start.stderr)
+        b_txt = (self.tmp / "sb_sessions/s1/0.txt").read_text(encoding="utf-8")
+        self.assertIn("Sandbox: strict (rw: Workdir, /tmp; secrets: hidden; net: on)", b_txt)
+
+        # Toggle sandbox via CLI
+        r_sb_nonet = subprocess.run(
+            [str(SCRIPT), "--sandbox", "nonet", "s1"],
+            capture_output=True,
+            text=True,
+            cwd=str(proj),
+            env=env,
+            check=False,
+        )
+        self.assertEqual(r_sb_nonet.returncode, 0, r_sb_nonet.stderr)
+        b_txt2 = (self.tmp / "sb_sessions/s1/0.txt").read_text(encoding="utf-8")
+        self.assertIn("Sandbox: nonet", b_txt2)
+
+        # Calling --sandbox from inside a running block must be rejected
+        env_inside = {**env, "IN_RUN_BLOCK": "1"}
+        r_inside = subprocess.run(
+            [str(SCRIPT), "--sandbox", "off", "s1"],
+            capture_output=True,
+            text=True,
+            cwd=str(proj),
+            env=env_inside,
+            check=False,
+        )
+        self.assertEqual(r_inside.returncode, 2)
+        self.assertIn("cannot modify session sandbox settings from inside a running block", r_inside.stderr)
+
+        # Verify secret env scrubbing
+        scrubbed = self.mod.scrub_child_env(
+            {"PATH": "/usr/bin", "OPENAI_API_KEY": "secret", "GITHUB_TOKEN": "tok", "SSH_AUTH_SOCK": "/tmp/sock"},
+            "nonet",
+        )
+        self.assertEqual(scrubbed, {"PATH": "/usr/bin"})
+
+    def test_unicode_spoof_python_ast_risks_and_external_dir_grouping(self):
+        script = (
+            "echo normal\n"
+            "echo \u202ehidden\n"
+            "python3 - <<'PY'\n"
+            "import subprocess, urllib.request\n"
+            "subprocess.run(['id'])\n"
+            "urllib.request.urlopen('https://example.com')\n"
+            "eval('1+1')\n"
+            "PY\n"
+        )
+        findings = self.mod.scan_script_risks(script)
+        cats = [f["category"] for f in findings]
+        self.assertIn("unicode-spoof", cats)
+        self.assertIn("remote-exec", cats)
+        self.assertIn("net-write", cats)
+
+        ext_script = (
+            'cat "$HOME/todo_md/VERSION"\n'
+            'cat "$HOME/todo_md/README.md"\n'
+            'cat "$HOME/co_turn/README.md"\n'
+        )
+        summary = self.mod.summarize_script_actions(ext_script, Path("/tmp"))
+        groups = summary["operation_groups"]
+        self.assertEqual(groups[0][0], "$HOME/todo_md")
+        self.assertEqual(groups[1][0], "$HOME/co_turn")
 
 
 if __name__ == "__main__":

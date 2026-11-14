@@ -92,18 +92,43 @@ def main(argv: list[str] | None = None) -> int:
     if args and args[0] == "--clean":
         return cmd_clean(args[1:])
 
+    if args and args[0] == "--sandbox" and sys.stdin.isatty():
+        rest_sb = args[1:]
+        if not rest_sb or not any("/" in x for x in rest_sb):
+            return cmd_sandbox(rest_sb)
+
     auto_yes = False
+    sandbox_override: str | None = None
     filtered: list[str] = []
-    for a in args:
+    i = 0
+    while i < len(args):
+        a = args[i]
         if a in ("-y", "--yes", "--headless"):
             auto_yes = True
+            i += 1
+        elif a == "--no-sandbox":
+            sandbox_override = "off"
+            i += 1
+        elif a.startswith("--sandbox="):
+            sandbox_override = a.split("=", 1)[1] or "strict"
+            i += 1
+        elif a == "--sandbox":
+            if i + 1 < len(args) and args[i + 1].lower() in ("off", "0", "false", "on", "1", "true", "auto", "strict", "nonet", "no-net"):
+                sandbox_override = args[i + 1]
+                i += 2
+            else:
+                sandbox_override = "strict"
+                i += 1
         else:
             filtered.append(a)
+            i += 1
     args = filtered
 
     if not args:
         if not sys.stdin.isatty():
-            return cmd_start([])
+            return cmd_start([], sandbox_override=sandbox_override)
+        if sandbox_override is not None:
+            return cmd_sandbox([sandbox_override])
         sys.stderr.write(usage_text())
         return 2
 
@@ -120,7 +145,9 @@ def main(argv: list[str] | None = None) -> int:
     if args[0] in ("--retry", "--rerun"):
         if len(args) > 2:
             raise SystemExit(f"{prog}: usage: {prog} --retry [-y] [session/step]")
-        return cmd_retry(args[1] if len(args) == 2 else None, auto_yes=auto_yes)
+        return cmd_retry(
+            args[1] if len(args) == 2 else None, auto_yes=auto_yes, sandbox_override=sandbox_override
+        )
 
     if args[0] == "--check-update":
         if len(args) != 1:
@@ -135,18 +162,22 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_update(force=force)
 
     if args[0] in ("--start", "--bundle"):
-        return cmd_start(args[1:])
+        return cmd_start(args[1:], sandbox_override=sandbox_override)
 
     if args[0] == "--fix":
         if len(args) != 2:
             raise SystemExit(f"{prog}: usage: {prog} --fix [-y] <session>/<target>")
-        return cmd_fix(args[1], sys.stdin.read(), auto_yes=auto_yes)
+        return cmd_fix(
+            args[1], sys.stdin.read(), auto_yes=auto_yes, sandbox_override=sandbox_override
+        )
 
     if len(args) != 1 or args[0].startswith("-"):
         raise SystemExit(
             f"{prog}: usage: {prog} [-y] <session>/<step> (or pipe bundle to '{prog}' to start a session; see --help)"
         )
-    return cmd_normal(args[0], sys.stdin.read(), auto_yes=auto_yes)
+    return cmd_normal(
+        args[0], sys.stdin.read(), auto_yes=auto_yes, sandbox_override=sandbox_override
+    )
 
 
 if __name__ == "__main__":

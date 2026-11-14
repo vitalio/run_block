@@ -90,9 +90,13 @@ def format_safety_box(
     if summary:
         wdir = str(summary.get("work_dir") or "")
         cd_dirs = list(summary.get("cd_dirs") or [])
+        sb_mode = str(summary.get("sandbox") or "off")
         if wdir:
             wline = f"Workdir: {wdir}" + (f"  (cd -> {', '.join(cd_dirs)})" if cd_dirs else "")
             content_lines.extend(textwrap.wrap(wline, width=max_row_len) or [wline])
+        if sb_mode and sb_mode != "off":
+            sb_line = f"Sandbox: {format_sandbox_header(sb_mode)}"
+            content_lines.extend(textwrap.wrap(sb_line, width=max_row_len) or [sb_line])
         if meta_str:
             content_lines.append(f"Script: {meta_str}")
         ops = list(summary.get("operations") or [])
@@ -306,14 +310,15 @@ def confirm_execution(
         return True, ""
     findings = scan_script_risks(script_text)
     note = ""
+    approve_decision = ""
     approve_cmd, _ = get_setting("approve_cmd")
     if approve_cmd:
         wdir = Path(str(summary.get("work_dir"))) if summary and summary.get("work_dir") else get_work_dir()
         plan_obj = analyze_script(script_text, work_dir=wdir, label=label, check_syntax=False)
-        decision, note = run_approve_cmd(approve_cmd, label, script_text, plan_obj, script_path=script_path)
-        if decision == "reject":
+        approve_decision, note = run_approve_cmd(approve_cmd, label, script_text, plan_obj, script_path=script_path)
+        if approve_decision == "reject":
             return False, (note or "rejected by RUN_BLOCK_APPROVE_CMD")
-        if decision == "approve":
+        if approve_decision == "approve":
             if findings and (auto_yes or not sys.stdout.isatty() or no_clipboard()):
                 for f in findings:
                     sys.stdout.write(f"[{label}] safety warning [{f['category']}]: {f['snippet']}\n")
@@ -325,7 +330,7 @@ def confirm_execution(
                 sys.stdout.write(f"[{label}] safety warning [{f['category']}]: {f['snippet']}\n")
             sys.stdout.flush()
         return True, note
-    default_yes = (len(findings) == 0)
+    default_yes = (len(findings) == 0 and approve_decision != "prompt")
     box, inner_width, cursor_offset = format_safety_box(
         label, findings, default_yes=default_yes, summary=summary, note=note
     )

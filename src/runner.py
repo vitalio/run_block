@@ -19,7 +19,7 @@ def next_session_name(base: Path) -> str:
     return f"s{n}"
 
 
-def start_session(name: str | None = None, force: bool = False) -> Path:
+def start_session(name: str | None = None, force: bool = False, sandbox_mode: str | None = None) -> Path:
     base = ensure_base()
     if not name:
         name = next_session_name(base)
@@ -49,7 +49,7 @@ def start_session(name: str | None = None, force: bool = False) -> Path:
                     raise SystemExit(f"{prog_name()}: aborted")
         shutil.rmtree(sdir)
     sdir.mkdir(mode=0o700, parents=True)
-    ensure_session_bundle(sdir)
+    ensure_session_bundle(sdir, sandbox_mode=sandbox_mode)
     return sdir
 
 
@@ -122,9 +122,12 @@ def run_script(
     header_lines: list[str] | None = None,
     cleanup_on_abort: list[Path] | None = None,
     auto_yes: bool = False,
+    sandbox_override: str | None = None,
 ) -> int:
     headless = auto_yes or os.environ.get("RUN_BLOCK_HEADLESS") == "1"
-    work_dir = get_work_dir(script_path.parent)
+    sdir = script_path.parent
+    work_dir = get_work_dir(sdir)
+    sandbox_mode = get_sandbox_mode(sdir, override=sandbox_override)
     shell_bin, _ = get_setting("shell")
     is_ps = _is_powershell(shell_bin)
     script_text = script_path.read_text(encoding="utf-8")
@@ -185,6 +188,7 @@ def run_script(
 
     aborted_marker = script_path.with_suffix(".aborted")
     summary_obj = summarize_script_actions(script_text, work_dir=work_dir)
+    summary_obj["sandbox"] = sandbox_mode
     approved, abort_reason = confirm_execution(
         label, script_text, summary=summary_obj, script_path=script_path, auto_yes=headless
     )
@@ -230,7 +234,10 @@ def run_script(
                 os.close(slave_fd)
                 slave_fd = None
 
-    child_env = {**os.environ, "IN_RUN_BLOCK": "1"}
+    bundle_file = sdir / "0.txt"
+    bundle_snapshot = bundle_file.read_bytes() if bundle_file.is_file() else None
+    child_env = scrub_child_env({**os.environ, "IN_RUN_BLOCK": "1"}, sandbox_mode)
+    exec_cmd = build_sandbox_exec(exec_cmd, work_dir=work_dir, base_dir=ensure_base(), sandbox_mode=sandbox_mode)
     if master_fd is not None and slave_fd is not None:
         try:
             proc = subprocess.Popen(
@@ -283,6 +290,13 @@ def run_script(
             sys.stdout.flush()
         proc.stdout.close()
         rc = proc.wait()
+    if bundle_snapshot is not None:
+        if not bundle_file.is_file() or bundle_file.read_bytes() != bundle_snapshot:
+            write_private(bundle_file, bundle_snapshot.decode("utf-8", "replace"), overwrite=True)
+            warn_msg = f"\n[{label}] SECURITY WARNING: block attempted to modify {bundle_file.name} (reverted)\n"
+            log_chunks.append(warn_msg)
+            sys.stdout.write(warn_msg)
+            sys.stdout.flush()
     if log_chunks and not log_chunks[-1].endswith("\n"):
         log_chunks.append("\n")
         sys.stdout.write("\n")
@@ -304,7 +318,9 @@ def run_script(
     return rc
 
 
-def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
+def cmd_normal(
+    ref: str, payload: str, auto_yes: bool = False, sandbox_override: str | None = None
+) -> int:
     headless = auto_yes or os.environ.get("RUN_BLOCK_HEADLESS") == "1"
     session, step = parse_ref(ref, allow_fix_step=False)
     step_num = int(step)
@@ -312,7 +328,7 @@ def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
         raise SystemExit(f"{prog_name()}: step number must be >= 1")
     sdir = ensure_base() / session
     sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    ensure_session_bundle(sdir)
+    ensure_session_bundle(sdir, sandbox_mode=sandbox_override)
     label = f"{session}/{step}"
     script_path = _find_step_script(sdir, step)
     out_path = sdir / f"{step}.txt"
@@ -368,10 +384,19 @@ def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
         return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: empty script on stdin", headless=headless)
 
     write_private(script_path, payload, overwrite=overwrite)
-    return run_script(label, script_path, out_path, cleanup_on_abort=[script_path], auto_yes=auto_yes)
+    return run_script(
+        label,
+        script_path,
+        out_path,
+        cleanup_on_abort=[script_path],
+        auto_yes=auto_yes,
+        sandbox_override=sandbox_override,
+    )
 
 
-def cmd_fix(ref: str, fix_code: str, auto_yes: bool = False) -> int:
+def cmd_fix(
+    ref: str, fix_code: str, auto_yes: bool = False, sandbox_override: str | None = None
+) -> int:
     headless = auto_yes or os.environ.get("RUN_BLOCK_HEADLESS") == "1"
     session, target = parse_ref(ref, allow_fix_step=True)
     sdir = ensure_base() / session
@@ -398,12 +423,29 @@ def cmd_fix(ref: str, fix_code: str, auto_yes: bool = False) -> int:
     if not fix_code.strip():
         return not_run_exit(label, sdir, new_step, out_path, f"[{label}] NOT RUN: empty fix on stdin")
 
+    ast_ok, ast_err = validate_fix_ast(fix_code)
+    if not ast_ok:
+        return not_run_exit(
+            label,
+            sdir,
+            new_step,
+            out_path,
+            f"[{label}] NOT RUN: unsafe construct in --fix ({ast_err})",
+            headless=headless,
+        )
     orig_text = src_script.read_text(encoding="utf-8")
-    ns: dict[str, object] = {"text": orig_text, "re": re}
+    ns: dict[str, object] = {"__builtins__": dict(SAFE_FIX_BUILTINS), "text": orig_text, "re": re}
     try:
         exec(compile(fix_code, str(fix_path), "exec"), ns)
     except Exception as exc:
-        return not_run_exit(label, sdir, new_step, out_path, f"[{label}] NOT RUN: fix raised {type(exc).__name__}: {exc}")
+        return not_run_exit(
+            label,
+            sdir,
+            new_step,
+            out_path,
+            f"[{label}] NOT RUN: fix raised {type(exc).__name__}: {exc}",
+            headless=headless,
+        )
 
     new_text = ns.get("text")
     if not isinstance(new_text, str):
@@ -422,7 +464,15 @@ def cmd_fix(ref: str, fix_code: str, auto_yes: bool = False) -> int:
         )
     )
     header = [f"[{label}] patched {target}{ext} -> {new_step}{ext}:\n", diff]
-    return run_script(label, script_path, out_path, header_lines=header, cleanup_on_abort=[fix_path, script_path], auto_yes=auto_yes)
+    return run_script(
+        label,
+        script_path,
+        out_path,
+        header_lines=header,
+        cleanup_on_abort=[fix_path, script_path],
+        auto_yes=auto_yes,
+        sandbox_override=sandbox_override,
+    )
 
 
 def _step_sort_key(stem: str) -> tuple[int, int]:
@@ -530,7 +580,9 @@ def cmd_show(ref: str | None = None) -> int:
     return 0
 
 
-def cmd_retry(ref: str | None = None, auto_yes: bool = False) -> int:
+def cmd_retry(
+    ref: str | None = None, auto_yes: bool = False, sandbox_override: str | None = None
+) -> int:
     if ref:
         session, step = parse_ref(ref, allow_fix_step=True)
     else:
@@ -542,7 +594,66 @@ def cmd_retry(ref: str | None = None, auto_yes: bool = False) -> int:
         raise SystemExit(f"{prog_name()}: block {session}/{step} not found ({script_path})")
     out_path.unlink(missing_ok=True)
     (sdir / f"{step}.aborted").unlink(missing_ok=True)
-    return run_script(f"{session}/{step}", script_path, out_path, cleanup_on_abort=[], auto_yes=auto_yes)
+    return run_script(
+        f"{session}/{step}",
+        script_path,
+        out_path,
+        cleanup_on_abort=[],
+        auto_yes=auto_yes,
+        sandbox_override=sandbox_override,
+    )
+
+
+def _find_latest_session_dir() -> Path | None:
+    base = ensure_base()
+    sdirs = sorted(
+        [p for p in base.iterdir() if p.is_dir()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return sdirs[0] if sdirs else None
+
+
+def cmd_sandbox(argv: list[str]) -> int:
+    prog = prog_name()
+    if in_run_block():
+        sys.stderr.write(f"{prog}: cannot modify session sandbox settings from inside a running block\n")
+        return 2
+    mode_arg: str | None = None
+    session_arg: str | None = None
+    for a in argv:
+        if re.fullmatch(r"s\d+", a) and session_arg is None and mode_arg is not None:
+            session_arg = a
+        elif mode_arg is None and a.lower() in ("off", "0", "false", "on", "1", "true", "auto", "strict", "nonet", "no-net"):
+            mode_arg = normalize_sandbox_mode(a)
+        elif session_arg is None and re.fullmatch(r"[A-Za-z0-9._-]+", a) and (ensure_base() / a).is_dir():
+            session_arg = a
+        elif mode_arg is None:
+            mode_arg = normalize_sandbox_mode(a)
+        else:
+            raise SystemExit(f"{prog}: usage: {prog} --sandbox [off|strict|nonet] [session]")
+
+    base = ensure_base()
+    sdir = (base / session_arg) if session_arg else _find_latest_session_dir()
+    backend = detect_sandbox_backend()
+    if mode_arg is None:
+        cur_mode = get_sandbox_mode(sdir)
+        sess_lbl = sdir.name if sdir is not None else "(no active session)"
+        sys.stdout.write(
+            f"Session: {sess_lbl}\n"
+            f"Sandbox: {format_sandbox_header(cur_mode)}\n"
+            f"Backend: {backend}\n"
+        )
+        return 0
+    if sdir is None:
+        sdir = start_session(session_arg, sandbox_mode=mode_arg)
+    else:
+        sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        set_session_bundle_header(sdir, "Sandbox", format_sandbox_header(mode_arg))
+    sys.stdout.write(
+        f"Updated {sdir.name}/0.txt -> Sandbox: {format_sandbox_header(mode_arg)} (backend: {backend})\n"
+    )
+    return 0
 
 
 def _dir_size_bytes(path: Path) -> int:

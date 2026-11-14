@@ -51,6 +51,10 @@ def get_setting(key: str, prog: str | None = None) -> tuple[str, str]:
         if os.environ.get("RUN_BLOCK_SAFETY_RULES") is not None:
             return os.environ["RUN_BLOCK_SAFETY_RULES"].strip(), "env"
         return "", "default"
+    if key == "sandbox":
+        if os.environ.get("RUN_BLOCK_SANDBOX") is not None and os.environ["RUN_BLOCK_SANDBOX"].strip():
+            return normalize_sandbox_mode(os.environ["RUN_BLOCK_SANDBOX"].strip()), "env"
+        return "off", "default"
     if key == "approve_cmd":
         if os.environ.get("RUN_BLOCK_APPROVE_CMD"):
             return os.environ["RUN_BLOCK_APPROVE_CMD"].strip(), "env"
@@ -164,6 +168,17 @@ def _session_bundle_workdir(session_dir: Path | None) -> Path | None:
     return None
 
 
+def normalize_sandbox_mode(raw: str) -> str:
+    v = raw.strip().lower()
+    if v in ("", "0", "off", "false", "no", "none", "disable", "disabled"):
+        return "off"
+    if v in ("1", "on", "true", "yes", "auto", "strict", "bwrap", "seatbelt", "sandbox-exec"):
+        return "strict"
+    if v in ("nonet", "no-net", "offline", "bwrap-nonet", "seatbelt-nonet"):
+        return "nonet"
+    return raw.strip()
+
+
 def get_work_dir(session_dir: Path | None = None) -> Path:
     val, _ = get_setting("work_dir")
     if val.lower() == "cwd":
@@ -174,6 +189,21 @@ def get_work_dir(session_dir: Path | None = None) -> Path:
     if sess_wdir is not None:
         return sess_wdir
     return _git_toplevel_or_cwd()
+
+
+def get_sandbox_mode(session_dir: Path | None = None, override: str | None = None) -> str:
+    if override is not None and override.strip():
+        return normalize_sandbox_mode(override)
+    if os.environ.get("RUN_BLOCK_SANDBOX") is not None and os.environ["RUN_BLOCK_SANDBOX"].strip():
+        return normalize_sandbox_mode(os.environ["RUN_BLOCK_SANDBOX"])
+    if session_dir is not None:
+        headers = parse_bundle_headers(session_dir)
+        raw_sb = headers.get("sandbox") or ""
+        if raw_sb:
+            mode_token = raw_sb.split()[0]
+            return normalize_sandbox_mode(mode_token)
+    val, _ = get_setting("sandbox")
+    return normalize_sandbox_mode(val)
 
 
 def clipboard_mode() -> str:
