@@ -73,7 +73,7 @@ RUN_FIX
 | Environment Variable | Default | Description |
 | :--- | :--- | :--- |
 | `RUN_BLOCK_DIR` | `/tmp/run_block` | Directory where session `<step>.sh` and `<step>.txt` files are stored |
-| `RUN_BLOCK_CWD` | `auto` | `auto` (Git root or `$PWD`), `cwd` (always `$PWD`), or explicit path |
+| `RUN_BLOCK_CWD` | `auto` | `auto` (session `Workdir` from `0.txt`, Git root, or `$PWD`), `cwd` (always `$PWD`), or explicit path |
 | `RUN_BLOCK_CLIPBOARD` | `prompt` | `prompt` (`Enter`/`Esc` box), `auto` (copy automatically), `never` |
 | `RUN_BLOCK_HEADLESS` | `0` | Set to `1` (or pass `-y`/`--yes`) for raw stdout protocol without TUI boxes |
 | `RUN_BLOCK_APPROVE_CMD` | *(none)* | External/LLM validator command receiving `--plan` JSON on `stdin` (`0`=approve, `2`=prompt user with stdout note, other=reject) |

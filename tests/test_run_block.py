@@ -325,9 +325,10 @@ class TestRunBlock(unittest.TestCase):
         )
         self.assertEqual(r_pipe.returncode, 0, r_pipe.stderr)
         self.assertIn("s1/0 · START BUNDLE", r_pipe.stdout)
-        self.assertIn("Next block: s1/1", r_pipe.stdout)
+        self.assertIn("Next-Block: s1/1", r_pipe.stdout)
         bundle1 = (self.tmp / "sessions/s1/0.txt").read_text(encoding="utf-8")
-        self.assertIn("Session: s1\nNext block: s1/1\nWorkdir:", bundle1)
+        self.assertIn("Session: s1\nNext-Block: s1/1\nWorkdir:", bundle1)
+        self.assertIn("\nDate: ", bundle1)
         self.assertIn("===== File: AGENTS.md =====", bundle1)
         self.assertIn("Work on task F1", bundle1)
 
@@ -366,6 +367,56 @@ class TestRunBlock(unittest.TestCase):
         )
         self.assertEqual(r_show0.returncode, 0)
         self.assertIn("Bundle:", r_show0.stdout)
+
+        # Running s1/2 from a completely unrelated directory when RUN_BLOCK_CWD=auto
+        # must still execute in the session's Workdir recorded in s1/0.txt.
+        other_dir = self.tmp / "other_unrelated_dir"
+        other_dir.mkdir()
+        env_auto = {**os.environ, "RUN_BLOCK_DIR": str(self.tmp / "sessions")}
+        env_auto.pop("RUN_BLOCK_CWD", None)
+        r_cross = subprocess.run(
+            [str(SCRIPT), "-y", "s1/2"],
+            input="pwd\n",
+            capture_output=True,
+            text=True,
+            cwd=str(other_dir),
+            env=env_auto,
+            check=False,
+        )
+        self.assertEqual(r_cross.returncode, 0, r_cross.stderr)
+        self.assertIn(str(proj.resolve()), r_cross.stdout)
+
+        # Implicit session creation via s3/1 (without prior --start) must also create s3/0.txt
+        r_imp1 = subprocess.run(
+            [str(SCRIPT), "-y", "s3/1"],
+            input="pwd\n",
+            capture_output=True,
+            text=True,
+            cwd=str(proj),
+            env=env_auto,
+            check=False,
+        )
+        self.assertEqual(r_imp1.returncode, 0, r_imp1.stderr)
+        s3_bundle = self.tmp / "sessions/s3/0.txt"
+        self.assertTrue(s3_bundle.is_file())
+        hdrs = self.mod.parse_bundle_headers(s3_bundle.parent)
+        self.assertEqual(hdrs.get("session"), "s3")
+        self.assertEqual(hdrs.get("next-block"), "s3/1")
+        self.assertEqual(Path(hdrs["workdir"]).resolve(), proj.resolve())
+        self.assertTrue(hdrs.get("date"))
+
+        # Subsequent step s3/2 run from other_dir also uses s3/0.txt Workdir
+        r_imp2 = subprocess.run(
+            [str(SCRIPT), "-y", "s3/2"],
+            input="pwd\n",
+            capture_output=True,
+            text=True,
+            cwd=str(other_dir),
+            env=env_auto,
+            check=False,
+        )
+        self.assertEqual(r_imp2.returncode, 0, r_imp2.stderr)
+        self.assertIn(str(proj.resolve()), r_imp2.stdout)
 
     def test_info_and_prompt_boxes_and_skipped_step_confirmation(self):
         info_box = self.mod.format_info_box("s1/0 · START BUNDLE", ["Session: s1", "Next block: s1/1"])

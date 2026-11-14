@@ -49,6 +49,7 @@ def start_session(name: str | None = None, force: bool = False) -> Path:
                     raise SystemExit(f"{prog_name()}: aborted")
         shutil.rmtree(sdir)
     sdir.mkdir(mode=0o700, parents=True)
+    ensure_session_bundle(sdir)
     return sdir
 
 
@@ -277,6 +278,7 @@ def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
         raise SystemExit(f"{prog_name()}: step number must be >= 1")
     sdir = ensure_base() / session
     sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    ensure_session_bundle(sdir)
     label = f"{session}/{step}"
     script_path = _find_step_script(sdir, step)
     out_path = sdir / f"{step}.txt"
@@ -455,7 +457,7 @@ def cmd_list(session: str | None = None) -> int:
         stem = sp.stem
         st = _step_status(sdir, stem)
         sh_text = sp.read_text(encoding="utf-8", errors="replace")
-        summary = summarize_script_actions(sh_text)
+        summary = summarize_script_actions(sh_text, work_dir=get_work_dir(sdir))
         rows = summary.get("rows") or []
         desc = "; ".join(f"{k}: {v}" for k, v in rows[:2]) if rows else ""
         if len(desc) > 56:

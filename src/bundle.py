@@ -1,6 +1,6 @@
 def format_start_bundle(
     session_name: str,
-    stdin_body: str,
+    stdin_body: str = "",
     work_dir: Path | None = None,
     now: datetime | None = None,
 ) -> dict[str, object]:
@@ -9,8 +9,9 @@ def format_start_bundle(
     clean_body = stdin_body.strip()
     bundle_header_lines = [
         f"Session: {session_name}",
-        f"Next block: {session_name}/1",
+        f"Next-Block: {session_name}/1",
         f"Workdir: {wdir}",
+        f"Date: {ts}",
     ]
     bundle_header_text = "\n".join(bundle_header_lines) + "\n"
     full_text = bundle_header_text + ("\n" + clean_body + "\n" if clean_body else "")
@@ -18,7 +19,7 @@ def format_start_bundle(
     total_tokens = count_tokens(full_text.encode("utf-8"))["gpt"]
     console_lines = [
         f"Session: {session_name}",
-        f"Next block: {session_name}/1",
+        f"Next-Block: {session_name}/1",
         f"Date: {ts}",
         f"Workdir: {wdir}",
         f"Total: {total_lines} lines (~{total_tokens} tokens)",
@@ -68,9 +69,9 @@ def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
     bundle_path = sdir / "0.txt"
     res = format_start_bundle(session_name=session_name, stdin_body=stdin_text)
     write_private(bundle_path, str(res["full"]), overwrite=True)
-    wdir = get_work_dir().resolve()
+    wdir = get_work_dir(sdir).resolve()
     body_lines = [
-        f"Next block: {session_name}/1",
+        f"Next-Block: {session_name}/1",
         f"Workdir:    {wdir}",
         f"Bundle:     {bundle_path}",
     ]
@@ -85,3 +86,11 @@ def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
         if not in_run_block():
             offer_clipboard_copy(label0, bundle_path, ok=True, rc=0, title_kind="START BUNDLE", extra_lines=body_lines)
     return 0
+
+
+def ensure_session_bundle(sdir: Path, work_dir: Path | None = None) -> Path:
+    bundle_path = sdir / "0.txt"
+    if not bundle_path.is_file():
+        res = format_start_bundle(session_name=sdir.name, stdin_body="", work_dir=work_dir)
+        write_private(bundle_path, str(res["full"]), overwrite=True)
+    return bundle_path

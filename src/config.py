@@ -125,26 +125,42 @@ def _git_toplevel_or_cwd() -> Path:
     return Path.cwd().resolve()
 
 
-def _session_bundle_workdir(session_dir: Path | None) -> Path | None:
+BUNDLE_HEADER_RE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z0-9-]+)?):\s*(.*)$")
+
+
+def parse_bundle_headers(session_dir: Path | None) -> dict[str, str]:
+    headers: dict[str, str] = {}
     if session_dir is None:
-        return None
+        return headers
     bundle_file = session_dir / "0.txt"
     if not bundle_file.is_file():
-        return None
+        return headers
     try:
         with bundle_file.open(encoding="utf-8", errors="replace") as f:
-            for _ in range(10):
-                line = f.readline()
-                if not line or line.startswith("====="):
+            for line in f:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("====="):
                     break
-                if line.startswith("Workdir:"):
-                    raw = line.split(":", 1)[1].strip()
-                    if raw:
-                        p = Path(raw)
-                        if p.is_dir():
-                            return p.resolve()
+                m = BUNDLE_HEADER_RE.match(stripped)
+                if not m:
+                    break
+                key = re.sub(r"\s+", "-", m.group(1).strip().lower())
+                headers[key] = m.group(2).strip()
     except OSError:
         pass
+    return headers
+
+
+def _session_bundle_workdir(session_dir: Path | None) -> Path | None:
+    headers = parse_bundle_headers(session_dir)
+    raw = headers.get("workdir") or headers.get("work-dir") or ""
+    if raw:
+        try:
+            p = Path(raw)
+            if p.is_dir():
+                return p.resolve()
+        except OSError:
+            pass
     return None
 
 
@@ -154,11 +170,10 @@ def get_work_dir(session_dir: Path | None = None) -> Path:
         return Path.cwd()
     if val.lower() != "auto":
         return Path(val).expanduser()
-    base_root = _git_toplevel_or_cwd()
     sess_wdir = _session_bundle_workdir(session_dir)
-    if sess_wdir is not None and (sess_wdir == base_root or base_root in sess_wdir.parents):
+    if sess_wdir is not None:
         return sess_wdir
-    return base_root
+    return _git_toplevel_or_cwd()
 
 
 def clipboard_mode() -> str:

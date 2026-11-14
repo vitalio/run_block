@@ -32,7 +32,7 @@ RUN_BLOCK
 
 ### Session & Step Numbering (`<session>/<step>`)
 
-- **Standard block:** Use `Next block: <session>/<step>` from the session header (e.g. `s1/1`), then increment the step sequentially (`s1/2`, `s1/3`, ...) after each `[<session>/<step>]` result.
+- **Standard block:** Use `Next-Block: <session>/<step>` from the session header (e.g. `s1/1`), then increment the step sequentially (`s1/2`, `s1/3`, ...) after each `[<session>/<step>]` result.
 - **No step reuse:** Every executed block consumes its step number, even if it fails. Never reuse or skip a step number.
 - **No duplicate unexecuted blocks:** If the user asks a question or requests an explanation about a block you already output in the previous reply and the script itself does not need to change, answer in prose and tell the user to run that existing `<session>/<step>` block — **do not** output the same block a second time.
 - **Isolated shell:** Each block runs in a fresh `bash` process starting in `Workdir` (`cd` and shell variables do not persist across blocks).

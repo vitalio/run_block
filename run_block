@@ -51,7 +51,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.16.1"
+VERSION = "0.16.2"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 
@@ -183,26 +183,42 @@ def _git_toplevel_or_cwd() -> Path:
     return Path.cwd().resolve()
 
 
-def _session_bundle_workdir(session_dir: Path | None) -> Path | None:
+BUNDLE_HEADER_RE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z0-9-]+)?):\s*(.*)$")
+
+
+def parse_bundle_headers(session_dir: Path | None) -> dict[str, str]:
+    headers: dict[str, str] = {}
     if session_dir is None:
-        return None
+        return headers
     bundle_file = session_dir / "0.txt"
     if not bundle_file.is_file():
-        return None
+        return headers
     try:
         with bundle_file.open(encoding="utf-8", errors="replace") as f:
-            for _ in range(10):
-                line = f.readline()
-                if not line or line.startswith("====="):
+            for line in f:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("====="):
                     break
-                if line.startswith("Workdir:"):
-                    raw = line.split(":", 1)[1].strip()
-                    if raw:
-                        p = Path(raw)
-                        if p.is_dir():
-                            return p.resolve()
+                m = BUNDLE_HEADER_RE.match(stripped)
+                if not m:
+                    break
+                key = re.sub(r"\s+", "-", m.group(1).strip().lower())
+                headers[key] = m.group(2).strip()
     except OSError:
         pass
+    return headers
+
+
+def _session_bundle_workdir(session_dir: Path | None) -> Path | None:
+    headers = parse_bundle_headers(session_dir)
+    raw = headers.get("workdir") or headers.get("work-dir") or ""
+    if raw:
+        try:
+            p = Path(raw)
+            if p.is_dir():
+                return p.resolve()
+        except OSError:
+            pass
     return None
 
 
@@ -212,11 +228,10 @@ def get_work_dir(session_dir: Path | None = None) -> Path:
         return Path.cwd()
     if val.lower() != "auto":
         return Path(val).expanduser()
-    base_root = _git_toplevel_or_cwd()
     sess_wdir = _session_bundle_workdir(session_dir)
-    if sess_wdir is not None and (sess_wdir == base_root or base_root in sess_wdir.parents):
+    if sess_wdir is not None:
         return sess_wdir
-    return base_root
+    return _git_toplevel_or_cwd()
 
 
 def clipboard_mode() -> str:
@@ -297,7 +312,7 @@ EMBEDDED_RULES: dict[str, tuple[str, str]] = {'blocks/bash': ('Bash terminal blo
                  '\n'
                  '### Session & Step Numbering (`<session>/<step>`)\n'
                  '\n'
-                 '- **Standard block:** Use `Next block: <session>/<step>` from the session header '
+                 '- **Standard block:** Use `Next-Block: <session>/<step>` from the session header '
                  '(e.g. `s1/1`), then increment the step sequentially (`s1/2`, `s1/3`, ...) after '
                  'each `[<session>/<step>]` result.\n'
                  '- **No step reuse:** Every executed block consumes its step number, even if it '
@@ -396,7 +411,7 @@ EMBEDDED_RULES: dict[str, tuple[str, str]] = {'blocks/bash': ('Bash terminal blo
                  '\n'
                  '### Session & Step Numbering (`<session>/<step>`)\n'
                  '\n'
-                 '- **Standard block:** Use `Next block: <session>/<step>` from the session header '
+                 '- **Standard block:** Use `Next-Block: <session>/<step>` from the session header '
                  '(e.g. `s1/1`), then increment the step sequentially (`s1/2`, `s1/3`, ...) after '
                  'each `[<session>/<step>]` result.\n'
                  '- **No step reuse:** Every executed block consumes its step number, even if it '
@@ -1623,6 +1638,7 @@ def start_session(name: str | None = None, force: bool = False) -> Path:
                     raise SystemExit(f"{prog_name()}: aborted")
         shutil.rmtree(sdir)
     sdir.mkdir(mode=0o700, parents=True)
+    ensure_session_bundle(sdir)
     return sdir
 
 
@@ -1851,6 +1867,7 @@ def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
         raise SystemExit(f"{prog_name()}: step number must be >= 1")
     sdir = ensure_base() / session
     sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    ensure_session_bundle(sdir)
     label = f"{session}/{step}"
     script_path = _find_step_script(sdir, step)
     out_path = sdir / f"{step}.txt"
@@ -2029,7 +2046,7 @@ def cmd_list(session: str | None = None) -> int:
         stem = sp.stem
         st = _step_status(sdir, stem)
         sh_text = sp.read_text(encoding="utf-8", errors="replace")
-        summary = summarize_script_actions(sh_text)
+        summary = summarize_script_actions(sh_text, work_dir=get_work_dir(sdir))
         rows = summary.get("rows") or []
         desc = "; ".join(f"{k}: {v}" for k, v in rows[:2]) if rows else ""
         if len(desc) > 56:
@@ -2172,7 +2189,7 @@ def cmd_clean(argv: list[str]) -> int:
 
 def format_start_bundle(
     session_name: str,
-    stdin_body: str,
+    stdin_body: str = "",
     work_dir: Path | None = None,
     now: datetime | None = None,
 ) -> dict[str, object]:
@@ -2181,8 +2198,9 @@ def format_start_bundle(
     clean_body = stdin_body.strip()
     bundle_header_lines = [
         f"Session: {session_name}",
-        f"Next block: {session_name}/1",
+        f"Next-Block: {session_name}/1",
         f"Workdir: {wdir}",
+        f"Date: {ts}",
     ]
     bundle_header_text = "\n".join(bundle_header_lines) + "\n"
     full_text = bundle_header_text + ("\n" + clean_body + "\n" if clean_body else "")
@@ -2190,7 +2208,7 @@ def format_start_bundle(
     total_tokens = count_tokens(full_text.encode("utf-8"))["gpt"]
     console_lines = [
         f"Session: {session_name}",
-        f"Next block: {session_name}/1",
+        f"Next-Block: {session_name}/1",
         f"Date: {ts}",
         f"Workdir: {wdir}",
         f"Total: {total_lines} lines (~{total_tokens} tokens)",
@@ -2240,9 +2258,9 @@ def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
     bundle_path = sdir / "0.txt"
     res = format_start_bundle(session_name=session_name, stdin_body=stdin_text)
     write_private(bundle_path, str(res["full"]), overwrite=True)
-    wdir = get_work_dir().resolve()
+    wdir = get_work_dir(sdir).resolve()
     body_lines = [
-        f"Next block: {session_name}/1",
+        f"Next-Block: {session_name}/1",
         f"Workdir:    {wdir}",
         f"Bundle:     {bundle_path}",
     ]
@@ -2257,6 +2275,14 @@ def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
         if not in_run_block():
             offer_clipboard_copy(label0, bundle_path, ok=True, rc=0, title_kind="START BUNDLE", extra_lines=body_lines)
     return 0
+
+
+def ensure_session_bundle(sdir: Path, work_dir: Path | None = None) -> Path:
+    bundle_path = sdir / "0.txt"
+    if not bundle_path.is_file():
+        res = format_start_bundle(session_name=sdir.name, stdin_body="", work_dir=work_dir)
+        write_private(bundle_path, str(res["full"]), overwrite=True)
+    return bundle_path
 
 
 def parse_version_from_source(source: str) -> str | None:
