@@ -54,3 +54,7 @@ Review CLI flags, stdin/stdout/stderr separation, and composability of run_block
 - Investigate and harden src/rules/blocks/bash.md and runner handling against LLM omitting the newline between RUN_BLOCK and the closing Markdown fence (which causes CommonMark to leave the code fence open).
 
 # ✅ [DONE] F13: Add src/bundles/run_block.bundle and remove --agents CLI flag — *2026-11-14*
+
+- Add `src/bundles/run_block.bundle` selecting `vitalio/run_block:blocks/bash` or `vitalio/run_block:blocks/pwsh` by OS.
+- Remove hardcoded `v{version:}` placeholder from `src/rules/blocks/bash.md` and `src/rules/blocks/pwsh.md` headers.
+- Remove `src/agents.py` and the `--agents` / `--agents-md` CLI flag from `src/header.py`, `src/cli.py`, `build.py`, `README.md`, `AGENTS.md`, `.agents_bundle`, and `tests/test_run_block.py`.
