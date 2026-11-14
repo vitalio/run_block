@@ -340,7 +340,9 @@ def cmd_normal(
         aborted_marker.unlink(missing_ok=True)
     elif script_path.exists() or out_path.exists():
         if sys.stdout.isatty() and not no_clipboard() and not headless:
-            existing_lines = [f"Script: {script_path}"]
+            existing_lines = []
+            if script_path.exists():
+                existing_lines.append(f"Script: {script_path}")
             if out_path.exists():
                 existing_lines.append(f"Output: {out_path}")
             if prompt_yes_no_box(
@@ -350,6 +352,8 @@ def cmd_normal(
                 default_yes=False,
                 yes_status=f"✓ Overwriting {label}.",
                 no_status=f"✗ Keeping existing {label}.",
+                script_path=script_path if script_path.exists() else None,
+                out_path=out_path if out_path.exists() else None,
             ):
                 overwrite = True
                 out_path.unlink(missing_ok=True)

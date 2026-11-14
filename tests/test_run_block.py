@@ -509,6 +509,54 @@ class TestRunBlock(unittest.TestCase):
             self.assertEqual(buf_abort.getvalue(), "")
             self.assertTrue((self.tmp / "s9/2.aborted").is_file())
 
+        # Verify STEP ALREADY EXISTS interactive actions: view script (s), view output (o), copy output (c), and default N on Enter
+        s_script = self.tmp / "s9/1.sh"
+        s_out = self.tmp / "s9/1.txt"
+        viewed_paths: list[Path] = []
+
+        def fake_editor(p: Path, _r, _w) -> None:
+            viewed_paths.append(p)
+
+        with unittest.mock.patch.object(self.mod, "open_script_in_editor", side_effect=fake_editor), \
+             unittest.mock.patch.object(self.mod, "clipboard_command", return_value=(["true"], "xclip < out")), \
+             unittest.mock.patch.object(self.mod, "copy_file_to_clipboard", return_value=True) as mock_copy:
+            tty_w_c = io.StringIO()
+            tty_r_c = io.StringIO("s\no\nc\n")
+            ok_c = self.mod.prompt_yes_no_box(
+                "s9/1 · STEP ALREADY EXISTS",
+                [f"Script: {s_script}", f"Output: {s_out}"],
+                "Overwrite and re-run s9/1?",
+                default_yes=False,
+                yes_status="✓ Overwriting s9/1.",
+                no_status="✗ Keeping existing s9/1.",
+                tty_streams=(tty_w_c, tty_r_c),
+                script_path=s_script,
+                out_path=s_out,
+            )
+            self.assertFalse(ok_c)
+            self.assertEqual(viewed_paths, [s_script, s_out])
+            mock_copy.assert_called_once_with(["true"], s_out)
+            out_c_text = tty_w_c.getvalue()
+            self.assertIn("-> Overwrite and re-run s9/1? [y/N/s(cript)/o(utput)/c(opy)]:", out_c_text)
+            self.assertIn(f"✓ Copied {s_out} to clipboard.", out_c_text)
+
+            # Pressing Enter on [y/N/...] selects default N without overwriting
+            tty_w_enter = io.StringIO()
+            tty_r_enter = io.StringIO("\n")
+            ok_enter = self.mod.prompt_yes_no_box(
+                "s9/1 · STEP ALREADY EXISTS",
+                [f"Script: {s_script}", f"Output: {s_out}"],
+                "Overwrite and re-run s9/1?",
+                default_yes=False,
+                yes_status="✓ Overwriting s9/1.",
+                no_status="✗ Keeping existing s9/1.",
+                tty_streams=(tty_w_enter, tty_r_enter),
+                script_path=s_script,
+                out_path=s_out,
+            )
+            self.assertFalse(ok_enter)
+            self.assertIn("✗ Keeping existing s9/1.", tty_w_enter.getvalue())
+
     def test_powershell_mode_and_agents(self):
         fake_pwsh = self.tmp / "pwsh"
         fake_pwsh.write_text(

@@ -52,7 +52,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.17.5"
+VERSION = "0.17.6"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 
@@ -1448,6 +1448,22 @@ def format_prompt_box(
     return box, inner_width, cursor_col_offset
 
 
+def _build_prompt_yes_no_suffix(
+    default_yes: bool,
+    has_script: bool = False,
+    has_output: bool = False,
+    can_copy: bool = False,
+) -> str:
+    parts = ["Y", "n"] if default_yes else ["y", "N"]
+    if has_script:
+        parts.append("s(cript)")
+    if has_output:
+        parts.append("o(utput)")
+    if can_copy:
+        parts.append("c(opy)")
+    return f"[{'/'.join(parts)}]:"
+
+
 def prompt_yes_no_box(
     title: str,
     content_lines: list[str],
@@ -1456,11 +1472,46 @@ def prompt_yes_no_box(
     yes_status: str = "✓ Confirmed by user.",
     no_status: str = "✗ Canceled by user.",
     tty_streams: tuple[object, object] | None = None,
+    script_path: Path | None = None,
+    out_path: Path | None = None,
 ) -> bool:
-    suffix = "[Y/n]:" if default_yes else "[y/N]:"
+    has_script = script_path is not None and script_path.is_file()
+    has_output = out_path is not None and out_path.is_file()
+    can_copy = has_output
+    suffix = _build_prompt_yes_no_suffix(
+        default_yes,
+        has_script=has_script,
+        has_output=has_output,
+        can_copy=can_copy,
+    )
     prompt_line = f"-> {question} {suffix}"
+    status_list: list[str] = [yes_status, no_status]
+    clip_target: Path | None = None
+    clip: tuple[list[str], str] | None = None
+    if can_copy and out_path is not None:
+        try:
+            full_out = out_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            full_out = ""
+        clip_target = resolve_clipboard_target(out_path, full_out)
+        clip = clipboard_command(clip_target)
+        status_list.append(f"✓ Copied {clip_target} to clipboard.")
+        if clip is not None:
+            status_list.append(f"✗ Clipboard copy failed; run: {clip[1]}")
+        else:
+            status_list.append(f"✗ No clipboard tool found for {clip_target}.")
+    extra_keys: dict[str, str] = {}
+    if has_script:
+        extra_keys["s"] = "script"
+        extra_keys["script"] = "script"
+    if has_output:
+        extra_keys["o"] = "output"
+        extra_keys["output"] = "output"
+    if can_copy:
+        extra_keys["c"] = "copy"
+        extra_keys["copy"] = "copy"
     box, inner_width, cursor_offset = format_prompt_box(
-        title, content_lines, prompt_line, status_lines=(yes_status, no_status)
+        title, content_lines, prompt_line, status_lines=status_list
     )
     bottom = f"└─{'─' * inner_width}─┘"
     try:
@@ -1473,15 +1524,48 @@ def prompt_yes_no_box(
         try:
             tty_w.write(f"{box}\r\033[1A\033[{cursor_offset}C")
             tty_w.flush()
+            status_line: str | None = None
             while True:
-                action = read_confirm_key(tty_r, default_yes=default_yes)
+                action = read_confirm_key(
+                    tty_r,
+                    default_yes=default_yes,
+                    default_no=not default_yes,
+                    extra_keys=extra_keys,
+                )
+                if action == "script" and has_script and script_path is not None:
+                    open_script_in_editor(script_path, tty_r, tty_w)
+                    tty_w.write(f"\r{pad_box_line(prompt_line, inner_width)}\n{bottom}\r\033[1A\033[{cursor_offset}C")
+                    tty_w.flush()
+                    continue
+                if action == "output" and has_output and out_path is not None:
+                    open_script_in_editor(out_path, tty_r, tty_w)
+                    tty_w.write(f"\r{pad_box_line(prompt_line, inner_width)}\n{bottom}\r\033[1A\033[{cursor_offset}C")
+                    tty_w.flush()
+                    continue
+                if action == "view" and (has_output or has_script):
+                    view_target = out_path if (has_output and out_path is not None) else script_path
+                    if view_target is not None:
+                        open_script_in_editor(view_target, tty_r, tty_w)
+                        tty_w.write(f"\r{pad_box_line(prompt_line, inner_width)}\n{bottom}\r\033[1A\033[{cursor_offset}C")
+                        tty_w.flush()
+                    continue
+                if action == "copy" and can_copy and clip_target is not None:
+                    if clip is not None and copy_file_to_clipboard(clip[0], clip_target):
+                        status_line = f"✓ Copied {clip_target} to clipboard."
+                    elif clip is not None:
+                        status_line = f"✗ Clipboard copy failed; run: {clip[1]}"
+                    else:
+                        status_line = f"✗ No clipboard tool found for {clip_target}."
+                    approved = False
+                    break
                 if action == "yes":
                     approved = True
                     break
                 if action == "no":
                     approved = False
                     break
-            status_line = yes_status if approved else no_status
+            if status_line is None:
+                status_line = yes_status if approved else no_status
             tty_w.write(f"\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
             tty_w.flush()
             return approved
@@ -1516,38 +1600,67 @@ def open_script_in_editor(script_path: Path, tty_r, tty_w) -> None:
         tty_w.flush()
 
 
-def read_confirm_key(tty_r, default_yes: bool) -> str:
-    """Reads a single key: returns 'yes', 'no', or 'view'."""
+def _parse_confirm_line(
+    line: str,
+    default_yes: bool,
+    default_no: bool = False,
+    extra_keys: dict[str, str] | None = None,
+) -> str:
+    if not line:
+        return "yes" if default_yes else "no"
+    ans = line.strip().lower()
+    if extra_keys and ans in extra_keys:
+        return extra_keys[ans]
+    if ans in ("v", "view", "e", "edit"):
+        return "view"
+    if default_yes and ans in ("", "y", "yes"):
+        return "yes"
+    if not default_yes and ans in ("y", "yes"):
+        return "yes"
+    if default_no and ans == "":
+        return "no"
+    if ans in ("n", "no", "q", "esc"):
+        return "no"
+    return "invalid"
+
+
+def read_confirm_key(
+    tty_r,
+    default_yes: bool,
+    default_no: bool = False,
+    extra_keys: dict[str, str] | None = None,
+) -> str:
+    """Reads a single key: returns 'yes', 'no', 'view', or an extra_keys action."""
     flush_tty_input(tty_r)
     if not HAS_PTY or termios is None or tty is None:
-        ans = tty_r.readline().strip().lower()
-        if ans in ("v", "view", "e", "edit"):
-            return "view"
-        if default_yes and ans in ("", "y", "yes"):
-            return "yes"
-        if not default_yes and ans in ("y", "yes"):
-            return "yes"
-        if ans in ("n", "no", "q", "esc"):
-            return "no"
-        return "invalid"
+        return _parse_confirm_line(
+            tty_r.readline(), default_yes, default_no=default_no, extra_keys=extra_keys
+        )
     try:
         fd = tty_r.fileno()
         old_attrs = termios.tcgetattr(fd)
     except Exception:
-        ans = tty_r.readline().strip().lower()
-        return "view" if ans in ("v", "view", "e", "edit") else ("yes" if ans in ("y", "yes") else "no")
+        return _parse_confirm_line(
+            tty_r.readline(), default_yes, default_no=default_no, extra_keys=extra_keys
+        )
     try:
         tty.setraw(fd, termios.TCSANOW)
         while True:
             ch = os.read(fd, 1)
             if not ch:
                 return "no"
+            ch_low = ch.decode("latin1").lower()
+            if extra_keys and ch_low in extra_keys:
+                return extra_keys[ch_low]
             if ch in (b"v", b"V", b"e", b"E"):
                 return "view"
             if ch in (b"y", b"Y"):
                 return "yes"
-            if default_yes and ch in (b"\r", b"\n"):
-                return "yes"
+            if ch in (b"\r", b"\n"):
+                if default_yes:
+                    return "yes"
+                if default_no:
+                    return "no"
             if ch in (b"n", b"N", b"q", b"Q", b"\x03", b"\x04"):
                 return "no"
             if ch == b"\x1b":
@@ -2224,7 +2337,9 @@ def cmd_normal(
         aborted_marker.unlink(missing_ok=True)
     elif script_path.exists() or out_path.exists():
         if sys.stdout.isatty() and not no_clipboard() and not headless:
-            existing_lines = [f"Script: {script_path}"]
+            existing_lines = []
+            if script_path.exists():
+                existing_lines.append(f"Script: {script_path}")
             if out_path.exists():
                 existing_lines.append(f"Output: {out_path}")
             if prompt_yes_no_box(
@@ -2234,6 +2349,8 @@ def cmd_normal(
                 default_yes=False,
                 yes_status=f"✓ Overwriting {label}.",
                 no_status=f"✗ Keeping existing {label}.",
+                script_path=script_path if script_path.exists() else None,
+                out_path=out_path if out_path.exists() else None,
             ):
                 overwrite = True
                 out_path.unlink(missing_ok=True)
