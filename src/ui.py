@@ -78,6 +78,7 @@ def format_safety_box(
     default_yes: bool = False,
     summary: dict[str, object] | None = None,
     note: str = "",
+    script_path: Path | None = None,
 ) -> tuple[str, int, int]:
     meta_str = str(summary.get("meta", "")) if summary else ""
     title = f" {label} · BLOCK PLAN "
@@ -133,9 +134,15 @@ def format_safety_box(
                 or [f"  {nline}"]
             )
 
+    run_target = str(script_path) if script_path is not None else label
+    status_lines = (
+        f"✓ Running {run_target} ...",
+        f"✗ Aborted (--retry {label})",
+    )
     inner_width = max(
         display_width(title),
         display_width(prompt_line),
+        *(display_width(s) for s in status_lines),
         *(display_width(b) for b in content_lines),
     )
     dashes = max(1, inner_width + 2 - display_width(title) - 1)
@@ -167,11 +174,13 @@ def format_prompt_box(
     title: str,
     content_lines: list[str],
     prompt_line: str,
+    status_lines: list[str] | tuple[str, ...] = (),
 ) -> tuple[str, int, int]:
     hdr = title if title.startswith(" ") else f" {title} "
     inner_width = max(
         display_width(hdr),
         display_width(prompt_line),
+        *(display_width(s) for s in status_lines),
         *(display_width(b) for b in content_lines),
     )
     dashes = max(1, inner_width + 2 - display_width(hdr) - 1)
@@ -197,7 +206,9 @@ def prompt_yes_no_box(
 ) -> bool:
     suffix = "[Y/n]:" if default_yes else "[y/N]:"
     prompt_line = f"-> {question} {suffix}"
-    box, inner_width, cursor_offset = format_prompt_box(title, content_lines, prompt_line)
+    box, inner_width, cursor_offset = format_prompt_box(
+        title, content_lines, prompt_line, status_lines=(yes_status, no_status)
+    )
     bottom = f"└─{'─' * inner_width}─┘"
     try:
         if tty_streams is not None:
@@ -332,7 +343,12 @@ def confirm_execution(
         return True, note
     default_yes = (len(findings) == 0 and approve_decision != "prompt")
     box, inner_width, cursor_offset = format_safety_box(
-        label, findings, default_yes=default_yes, summary=summary, note=note
+        label,
+        findings,
+        default_yes=default_yes,
+        summary=summary,
+        note=note,
+        script_path=script_path,
     )
     bottom = f"└─{'─' * inner_width}─┘"
     prompt_suffix = "[Y/n/v(iew)]:" if default_yes else "[y/n/v(iew)]:"
@@ -517,15 +533,21 @@ def format_clipboard_box(
     stats: str | None = None,
     title_kind: str = "END",
     extra_lines: list[str] | None = None,
+    cmd_str: str | None = None,
 ) -> tuple[str, int, int]:
     title = f" {label} · {title_kind} "
     body_lines = build_box_body_lines(out_path, rc=rc, stats=stats, extra_lines=extra_lines)
     prompt_line = "-> Copy to clipboard? [Enter/v(iew)/Esc]:"
-    copied_line = f"✓ Copied {out_path} to clipboard."
+    status_lines = [
+        f"✓ Copied {out_path} to clipboard.",
+        "Skipped clipboard copy.",
+    ]
+    if cmd_str:
+        status_lines.append(f"✗ Clipboard copy failed; run: {cmd_str}")
     inner_width = max(
         display_width(title),
         display_width(prompt_line),
-        display_width(copied_line),
+        *(display_width(s) for s in status_lines),
         *(display_width(b) for b in body_lines),
     )
     dashes = max(1, inner_width + 2 - display_width(title) - 1)
@@ -568,7 +590,14 @@ def offer_clipboard_copy(
         sys.stdout.flush()
         return
     box, inner_width, cursor_offset = format_clipboard_box(
-        label, out_path, ok=ok, rc=rc, stats=stats_line(out_path), title_kind=title_kind, extra_lines=extra_lines
+        label,
+        out_path,
+        ok=ok,
+        rc=rc,
+        stats=stats_line(out_path),
+        title_kind=title_kind,
+        extra_lines=extra_lines,
+        cmd_str=cmd_str,
     )
     bottom = f"└─{'─' * inner_width}─┘"
     line2 = "-> Copy to clipboard? [Enter/v(iew)/Esc]:"

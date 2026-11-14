@@ -163,6 +163,18 @@ class TestRunBlock(unittest.TestCase):
         summary = self.mod.summarize_script_actions(script)
         box, _, _ = self.mod.format_safety_box("s1/2", findings, summary=summary)
         self.assertIn("┌─ s1/2 · BLOCK PLAN ─", box)
+        narrow_script = "git pull --rebase || true\ngit status -sb\ngit log --oneline -5\ngit diff HEAD~3..HEAD --stat\n"
+        narrow_sum = self.mod.summarize_script_actions(narrow_script, Path("/home/vitaly/run_block"))
+        narrow_sp = Path("/tmp/run_block/s28/10.sh")
+        n_box, n_inner, _ = self.mod.format_safety_box(
+            "s28/10", [], default_yes=True, summary=narrow_sum, script_path=narrow_sp
+        )
+        run_status = self.mod.pad_box_line(f"✓ Running {narrow_sp} ...", n_inner)
+        abort_status = self.mod.pad_box_line("✗ Aborted (--retry s28/10)", n_inner)
+        self.assertEqual(
+            len({self.mod.display_width(l) for l in [*n_box.splitlines(), run_status, abort_status]}),
+            1,
+        )
         self.assertNotIn("BLOCK PLAN (", box)
         self.assertIn("Script: 7 lines, bash", box)
         self.assertIn("Operations:", box)
@@ -442,13 +454,21 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("┌─ s1/0 · START BUNDLE ", info_box)
         self.assertEqual(len({self.mod.display_width(l) for l in info_box.splitlines()}), 1)
 
-        p_box, _, _ = self.mod.format_prompt_box(
-            "s1/2 · MISSING PREVIOUS STEP",
-            ["Previous step s1/1 has not been run yet."],
-            "-> Run s1/2 anyway? [y/N]: ",
+        yes_st = "✓ Proceeding with s1/2 (skipped previous step s1/1)."
+        no_st = "✗ Canceled s1/2 (run s1/1 first)."
+        p_box, p_inner, _ = self.mod.format_prompt_box(
+            "s1/2",
+            ["Missing: s1/1"],
+            "-> Run s1/2 anyway? [y/N]:",
+            status_lines=(yes_st, no_st),
         )
-        self.assertIn("MISSING PREVIOUS STEP", p_box)
-        self.assertEqual(len({self.mod.display_width(l) for l in p_box.splitlines()}), 1)
+        self.assertEqual(
+            len({
+                self.mod.display_width(l)
+                for l in [*p_box.splitlines(), self.mod.pad_box_line(yes_st, p_inner), self.mod.pad_box_line(no_st, p_inner)]
+            }),
+            1,
+        )
 
         tty_w = io.StringIO()
         tty_r = io.StringIO("y\n")
