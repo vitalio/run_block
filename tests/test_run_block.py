@@ -70,7 +70,7 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("Usage:", r.stdout)
         self.assertIn("--plan", r.stdout)
         self.assertNotIn("--config", r.stdout)
-        self.assertIn("--agents", r.stdout)
+        self.assertNotIn("--agents", r.stdout)
         self.assertIn("--start", r.stdout)
         self.assertNotIn("--init-start", r.stdout)
         self.assertNotIn("--agents-install", r.stdout)
@@ -183,23 +183,13 @@ class TestRunBlock(unittest.TestCase):
         self.assertIn("[y/n/v(iew)]:", box)
         self.assertEqual(len({self.mod.display_width(l) for l in box.splitlines()}), 1)
 
-    def test_agents_markdown_adapts_to_binary_name(self):
-        r_md = subprocess.run([str(SCRIPT), "--agents"], capture_output=True, text=True, check=False)
-        self.assertEqual(r_md.returncode, 0)
-        self.assertIn(f"## Terminal blocks (`run_block` v{self.mod.VERSION})", r_md.stdout)
-        self.assertIn("CRITICAL — STRICT LAYOUT & MARKDOWN FENCE RULES", r_md.stdout)
-        self.assertIn("ONE BLOCK PER MESSAGE, ALWAYS AT THE VERY END (BATCH COMMANDS INSIDE IT)", r_md.stdout)
-        self.assertIn("run_block s1/1 <<'RUN_BLOCK'", r_md.stdout)
-        self.assertNotIn("/tmp/", r_md.stdout)
-
-        custom_bin = self.tmp / "run_term_block"
-        shutil.copy2(SCRIPT, custom_bin)
-        env = {**os.environ}
-        env.pop("RUN_BLOCK_DIR", None)
-        rc_md = subprocess.run([str(custom_bin), "--agents"], capture_output=True, text=True, env=env, check=False)
-        self.assertEqual(rc_md.returncode, 0)
-        self.assertIn("## Terminal blocks (`run_term_block`", rc_md.stdout)
-        self.assertIn("run_term_block s1/1 <<'RUN_BLOCK'", rc_md.stdout)
+    def test_bundle_and_rules_files_exist(self):
+        b_txt = (ROOT / "src/bundles/run_block.bundle").read_text(encoding="utf-8")
+        self.assertIn("rule vitalio/run_block:blocks/bash", b_txt)
+        self.assertIn("rule vitalio/run_block:blocks/pwsh", b_txt)
+        bash_md = (ROOT / "src/rules/blocks/bash.md").read_text(encoding="utf-8")
+        self.assertIn("## Terminal blocks (`{cmd:run_block}`)", bash_md)
+        self.assertIn("ONE BLOCK PER MESSAGE, ALWAYS AT THE VERY END (BATCH COMMANDS INSIDE IT)", bash_md)
     def test_start_autoincrement(self):
         s1 = self.mod.start_session()
         s2 = self.mod.start_session()
@@ -577,10 +567,10 @@ class TestRunBlock(unittest.TestCase):
         try:
             self.assertTrue(self.mod._is_powershell())
             self.assertEqual(self.mod._script_ext(), ".ps1")
-            md = self.mod.agents_markdown("run_block")
-            self.assertIn("powershell", md)
-            self.assertIn("'@ | run_block s1/1", md)
-            self.assertIn("fresh `pwsh` process", md)
+            pwsh_md = (ROOT / "src/rules/blocks/pwsh.md").read_text(encoding="utf-8")
+            self.assertIn("powershell", pwsh_md)
+            self.assertIn("'@ | {cmd:run_block} s1/1", pwsh_md)
+            self.assertIn("fresh `pwsh` process", pwsh_md)
 
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):

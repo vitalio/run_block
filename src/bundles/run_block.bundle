@@ -1,0 +1,3 @@
+# Description: Terminal block execution protocol and session rules
+[if os!=windows] rule vitalio/run_block:blocks/bash
+[if os=windows] rule vitalio/run_block:blocks/pwsh

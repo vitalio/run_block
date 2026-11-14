@@ -11,7 +11,6 @@
   {prog} --sandbox [MODE] [session]  Show or set session sandbox mode (off, strict, nonet)
   {prog} --clean [--keep N | --all]  Prune old session directories in {base_dir} (default: --keep 5)
   {prog} --start [opts]              Start session with explicit options (--session NAME, --sandbox MODE, --force)
-  {prog} --agents                    Print Markdown instructions for AI agents
   {prog} --update [--force]          Self-update {prog} from GitHub (vitalio/run_block)
   {prog} --check-update              Check if a newer version is available
   {prog} -V | --version              Print version and exit 0

@@ -82,9 +82,6 @@ def main(argv: list[str] | None = None) -> int:
     if "-V" in args or "--version" in args:
         sys.stdout.write(f"{prog} {VERSION}\n")
         return 0
-    if "--agents" in args or "--agents-md" in args:
-        sys.stdout.write(agents_markdown(prog) + "\n")
-        return 0
     if args and args[0] == "--plan":
         if len(args) != 1:
             raise SystemExit(f"{prog}: usage: {prog} --plan < script.sh")

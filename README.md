@@ -98,7 +98,6 @@ RUN_FIX
 | `run_block --sandbox [MODE] [session]` | Show or update session sandbox mode (`off`, `strict`, `nonet`) in `<session>/0.txt` |
 | `run_block --clean [--keep N \| --all]` | Prune old session directories in `/tmp/run_block` (default: `--keep 5`) |
 | `run_block --start [--session NAME]` | Read context bundle from `stdin` into `<session>/0.txt` |
-| `run_block --agents` | Print Markdown instructions for AI agents |
 | `run_block --update [--force]` | Self-update `run_block` from GitHub (`vitalio/run_block`) |
 | `run_block --check-update` | Check GitHub for a newer version |
 | `run_block -V`, `--version` | Print version and exit `0` |
