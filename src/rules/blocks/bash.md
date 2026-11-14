@@ -12,7 +12,7 @@ RUN_BLOCK
 ### CRITICAL — STRICT LAYOUT & MARKDOWN FENCE RULES
 
 1. ONE BLOCK PER MESSAGE, ALWAYS AT THE VERY END (BATCH COMMANDS INSIDE IT): Batch all related file reads, edits, and checks into a single block (never output two blocks or read one file per turn). Output zero trailing text after the closing fence and stop generating immediately.
-2. COLUMN-0 FENCES & SEPARATE-LINE HEREDOC TERMINATOR: Leave an empty line before the opening `bash` fence. Start the opening fence, `{cmd:run_block} ... <<'RUN_BLOCK'`, `RUN_BLOCK` (or `RUN_FIX`), and the closing fence at column 0, each on its own separate line (never concatenate `RUN_BLOCK` and the closing fence on the same line).
+2. COLUMN-0 FENCES & SEPARATE-LINE HEREDOC TERMINATOR: Leave an empty line before the opening `bash` fence. Start the opening fence, `{cmd:run_block} ... <<'RUN_BLOCK'`, `RUN_BLOCK` (or `RUN_FIX`), and the closing fence at column 0, each on its own separate line. Always emit a newline immediately after `RUN_BLOCK` (or `RUN_FIX`) so the closing fence stands alone on the final line.
 3. NO INNER TRIPLE BACKTICKS OR HEREDOC DELIMITERS (NEVER BREAK THE FENCE): Never write three consecutive backticks or a standalone `RUN_BLOCK` / `RUN_FIX` line inside the script body (use targeted `text.replace(old, new, 1)` for Markdown edits, or build dynamically via Python `F3 = chr(96) * 3`, `RB = 'RUN_' + 'BLOCK'`).
 4. ISOLATED SHELL & FAIL-FAST: Each block runs in a fresh `bash` process in `Workdir` (`cd` and shell variables do not persist across blocks). Enable `set -euo pipefail` only in state-mutating/build/commit blocks, never in read-only inspection blocks.
 

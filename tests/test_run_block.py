@@ -798,6 +798,15 @@ class TestRunBlock(unittest.TestCase):
             'git -C "$repo" status --porcelain\n'
             'done\n'
         )
+        dash_c_script = "python3 -c '\nimport ast, pathlib\nfor p in pathlib.Path(\".\").rglob(\"*.py\"):\n    ast.parse(p.read_text())\n'\n"
+        dc_sum = self.mod.summarize_script_actions(dash_c_script, Path("/tmp/work"))
+        self.assertEqual(dc_sum["operations"], [("python", "3 lines — calls: ast.parse")])
+        self.assertIn("1 python block", dc_sum["meta"])
+        dc_risk_script = "python3 -c '\nimport shutil\nshutil.rmtree(\"/tmp/x\")\n'\n"
+        dc_risks = self.mod.scan_script_risks(dc_risk_script)
+        self.assertTrue(any(r["category"] == "fs-destructive" for r in dc_risks))
+        F3 = chr(96) * 3
+        self.assertEqual(self.mod._strip_trailing_fence(f"echo ok\nRUN_BLOCK{F3}\n"), "echo ok\n")
         loop_sum = self.mod.summarize_script_actions(loop_subshell_script, Path("/tmp/work"))
         self.assertEqual(loop_sum["cd_dirs"], ["$HOME/proj_a", "$HOME/proj_b"])
         loop_groups = loop_sum["operation_groups"]

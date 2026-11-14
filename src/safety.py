@@ -112,6 +112,7 @@ def get_active_risk_rules() -> list[tuple[str, str, re.Pattern[str]]]:
     return active
 
 PY_HEREDOC_START_RE = re.compile(r"python3?\s+-[^\n]*<<-?['\"]?([A-Za-z0-9_]+)['\"]?")
+PY_DASH_C_START_RE = re.compile(r"^python3?(?:\s+-[A-Za-z0-9]+)*\s+-c\s+(['\"])(.*)$")
 SHELL_HEREDOC_START_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
 HEREDOC_REDIRECT_TARGET_RE = re.compile(r">>?\s*([^\s;<>&|]+)")
 FOR_LOOP_RE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)(?:\s*;\s*do|\s*)$")
@@ -299,9 +300,32 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
 
     py_blocks = 0
     py_eof: str | None = None
+    py_quote: str | None = None
     py_buf: list[str] = []
     py_start = 0
     sh_eof: str | None = None
+
+    def _emit_py_op(buf_lines: list[str], start_line: int) -> None:
+        pw: list[str] = []
+        pr: list[str] = []
+        pe: list[str] = []
+        _analyze_python_ast("\n".join(buf_lines), pw, pr, pe, [], start_line)
+        for x in pw:
+            _add_unique(writes, x)
+        for x in pr:
+            _add_unique(reads, x)
+        for x in pe:
+            _add_unique(exec_cmds, x)
+        parts = []
+        if pw:
+            parts.append("writes: " + ", ".join(pw))
+        if pr:
+            parts.append("reads: " + ", ".join(pr))
+        if pe:
+            parts.append("calls: " + ", ".join(pe))
+        n_lines = len([ln for ln in buf_lines if ln.strip()]) or len(buf_lines) or 1
+        desc = f"{n_lines} line{'s' if n_lines != 1 else ''}" + (f" — {'; '.join(parts)}" if parts else "")
+        add_op("python", desc)
     sh_cmd: str = ""
     sh_lines: int = 0
 
@@ -309,26 +333,18 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
         s = raw.strip()
         if py_eof is not None:
             if s == py_eof:
-                pw: list[str] = []
-                pr: list[str] = []
-                pe: list[str] = []
-                _analyze_python_ast("\n".join(py_buf), pw, pr, pe, [], py_start)
-                for x in pw:
-                    _add_unique(writes, x)
-                for x in pr:
-                    _add_unique(reads, x)
-                for x in pe:
-                    _add_unique(exec_cmds, x)
-                parts = []
-                if pw:
-                    parts.append("writes: " + ", ".join(pw))
-                if pr:
-                    parts.append("reads: " + ", ".join(pr))
-                if pe:
-                    parts.append("calls: " + ", ".join(pe))
-                desc = f"{len(py_buf)} lines" + (f" — {'; '.join(parts)}" if parts else "")
-                add_op("python", desc)
+                _emit_py_op(py_buf, py_start)
                 py_eof = None
+                py_buf = []
+            else:
+                py_buf.append(raw)
+            continue
+        if py_quote is not None:
+            if s == py_quote or (s.endswith(py_quote) and not s.endswith("\\" + py_quote)):
+                if s != py_quote:
+                    py_buf.append(raw.rstrip()[:-1])
+                _emit_py_op(py_buf, py_start)
+                py_quote = None
                 py_buf = []
             else:
                 py_buf.append(raw)
@@ -361,6 +377,17 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
             py_eof = m_py.group(1)
             py_buf = []
             py_start = idx
+            continue
+        m_pyc = PY_DASH_C_START_RE.match(s)
+        if m_pyc:
+            py_blocks += 1
+            q_ch, rest = m_pyc.group(1), m_pyc.group(2)
+            if rest.endswith(q_ch) and not rest.endswith("\\" + q_ch):
+                _emit_py_op([rest[:-1]], idx)
+            else:
+                py_quote = q_ch
+                py_buf = [rest] if rest.strip() else []
+                py_start = idx
             continue
         m_sh = SHELL_HEREDOC_START_RE.search(s)
         if m_sh:
@@ -455,6 +482,7 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
     active_cats = {cat for cat, _, _ in active_rules}
     findings: list[dict[str, object]] = []
     py_eof_token: str | None = None
+    py_quote_token: str | None = None
     py_buf: list[str] = []
     py_start = 0
     sh_eof_token: str | None = None
@@ -474,6 +502,22 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
                             pf = {**pf, "snippet": f"{pf['snippet']}  (in {cur_cd_dir})"}
                         findings.append(pf)
                 py_eof_token = None
+                py_buf = []
+            else:
+                py_buf.append(raw_line)
+            continue
+        if py_quote_token is not None:
+            if stripped == py_quote_token or (stripped.endswith(py_quote_token) and not stripped.endswith("\\" + py_quote_token)):
+                if stripped != py_quote_token:
+                    py_buf.append(raw_line.rstrip()[:-1])
+                py_f2: list[dict[str, object]] = []
+                _analyze_python_ast("\n".join(py_buf), [], [], [], py_f2, py_start)
+                for pf in py_f2:
+                    if str(pf.get("category")) in active_cats:
+                        if cur_cd_dir:
+                            pf = {**pf, "snippet": f"{pf['snippet']}  (in {cur_cd_dir})"}
+                        findings.append(pf)
+                py_quote_token = None
                 py_buf = []
             else:
                 py_buf.append(raw_line)
@@ -513,6 +557,22 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
             py_eof_token = m_py.group(1)
             py_buf = []
             py_start = idx
+            continue
+        m_pyc = PY_DASH_C_START_RE.match(stripped)
+        if m_pyc:
+            q_ch, rest = m_pyc.group(1), m_pyc.group(2)
+            if rest.endswith(q_ch) and not rest.endswith("\\" + q_ch):
+                py_f_inline: list[dict[str, object]] = []
+                _analyze_python_ast(rest[:-1], [], [], [], py_f_inline, idx)
+                for pf in py_f_inline:
+                    if str(pf.get("category")) in active_cats:
+                        if cur_cd_dir:
+                            pf = {**pf, "snippet": f"{pf['snippet']}  (in {cur_cd_dir})"}
+                        findings.append(pf)
+            else:
+                py_quote_token = q_ch
+                py_buf = [rest] if rest.strip() else []
+                py_start = idx
             continue
         if sh_eof_token is None:
             m_sh = SHELL_HEREDOC_START_RE.search(stripped)

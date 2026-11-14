@@ -318,9 +318,18 @@ def run_script(
     return rc
 
 
+TRAILING_FENCE_RE = re.compile(r"(?:\r?\n)+(?:RUN_(?:BLOCK|FIX)\s*)?`{3,}\s*$")
+
+
+def _strip_trailing_fence(payload: str) -> str:
+    cleaned = TRAILING_FENCE_RE.sub("", payload)
+    return (cleaned + "\n") if cleaned and not cleaned.endswith("\n") else cleaned
+
+
 def cmd_normal(
     ref: str, payload: str, auto_yes: bool = False, sandbox_override: str | None = None
 ) -> int:
+    payload = _strip_trailing_fence(payload)
     headless = auto_yes or os.environ.get("RUN_BLOCK_HEADLESS") == "1"
     session, step = parse_ref(ref, allow_fix_step=False)
     step_num = int(step)
@@ -401,6 +410,7 @@ def cmd_normal(
 def cmd_fix(
     ref: str, fix_code: str, auto_yes: bool = False, sandbox_override: str | None = None
 ) -> int:
+    fix_code = _strip_trailing_fence(fix_code)
     headless = auto_yes or os.environ.get("RUN_BLOCK_HEADLESS") == "1"
     session, target = parse_ref(ref, allow_fix_step=True)
     sdir = ensure_base() / session
