@@ -738,6 +738,30 @@ class TestRunBlock(unittest.TestCase):
         self.assertEqual(groups[0][0], "$HOME/proj_a")
         self.assertEqual(groups[1][0], "$HOME/proj_b")
 
+        loop_subshell_script = (
+            'for repo in "$HOME/proj_a" "$HOME/proj_b"; do\n'
+            '(\n'
+            'cd "$repo"\n'
+            'python3 build.py\n'
+            ')\n'
+            'done\n'
+            'nl -ba src/safety.py\n'
+            'for repo in "$HOME/proj_a" "$HOME/proj_b"; do\n'
+            'git -C "$repo" status --porcelain\n'
+            'done\n'
+        )
+        loop_sum = self.mod.summarize_script_actions(loop_subshell_script, Path("/tmp/work"))
+        self.assertEqual(loop_sum["cd_dirs"], ["$HOME/proj_a", "$HOME/proj_b"])
+        loop_groups = loop_sum["operation_groups"]
+        self.assertEqual(
+            loop_groups,
+            [
+                ("$HOME/proj_a, $HOME/proj_b", [("exec", "python3 build.py")]),
+                ("", [("read", "nl -ba src/safety.py")]),
+                ("$HOME/proj_a, $HOME/proj_b", [("git", "git status --porcelain")]),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

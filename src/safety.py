@@ -114,6 +114,29 @@ def get_active_risk_rules() -> list[tuple[str, str, re.Pattern[str]]]:
 PY_HEREDOC_START_RE = re.compile(r"python3?\s+-[^\n]*<<-?['\"]?([A-Za-z0-9_]+)['\"]?")
 SHELL_HEREDOC_START_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
 HEREDOC_REDIRECT_TARGET_RE = re.compile(r">>?\s*([^\s;<>&|]+)")
+FOR_LOOP_RE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)(?:\s*;\s*do|\s*)$")
+VAR_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=([^\s;|&#()]+)$")
+CONTROL_FLOW_SKIP_RE = re.compile(
+    r"^(?:\{|\}|do|done|then|else|fi|esac|(?:while|until|if|elif)\s+.+?;\s*(?:do|then)|case\s+.+\s+in)$"
+)
+
+
+def _parse_for_items(raw_items: str) -> list[str]:
+    cleaned = raw_items.strip().rstrip(";").strip()
+    try:
+        tokens = shlex.split(cleaned)
+    except ValueError:
+        tokens = [t.strip("'\"") for t in cleaned.split() if t.strip("'\"")]
+    return [t for t in tokens if t]
+
+
+def _expand_sh_vars(target: str, sh_vars: dict[str, list[str]]) -> list[str]:
+    clean = target.strip().strip('"').strip("'")
+    for var_name, vals in sh_vars.items():
+        pat = re.compile(rf"\$\{{?{re.escape(var_name)}\}}?")
+        if pat.search(clean) and vals:
+            return [pat.sub(v, clean) for v in vals]
+    return [clean]
 
 
 def _add_unique(items: list[str], val: str, limit: int = 12) -> None:
@@ -239,14 +262,16 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
     operations: list[tuple[str, str]] = []
     operation_groups: list[tuple[str, list[tuple[str, str]]]] = []
     cur_group_dir = ""
+    dir_stack: list[str] = []
+    sh_vars: dict[str, list[str]] = {}
 
     def _infer_op_dir(cmd_str: str) -> tuple[str, str]:
         if cur_group_dir:
             return cur_group_dir, cmd_str
         m_git_c = re.match(r"^git\s+-C\s+([^\s]+)\s+(.+)$", cmd_str)
         if m_git_c:
-            raw_d = m_git_c.group(1).strip("'\"")
-            return raw_d, f"git {m_git_c.group(2)}"
+            expanded_d = _expand_sh_vars(m_git_c.group(1), sh_vars)
+            return ", ".join(expanded_d), f"git {m_git_c.group(2)}"
         tokens = re.findall(r"(?:\$HOME|~|\.\.)/[A-Za-z0-9._-]+(?:/[^\s'\";|&]+)*", cmd_str)
         if tokens:
             first_tok = tokens[0]
@@ -347,18 +372,43 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
             continue
         if re.match(r"^set\s+[+-][A-Za-z]", s):
             continue
+        if s == "(":
+            dir_stack.append(cur_group_dir)
+            continue
+        if s == ")":
+            cur_group_dir = dir_stack.pop() if dir_stack else ""
+            continue
+        m_for = FOR_LOOP_RE.match(s)
+        if m_for:
+            items = _parse_for_items(m_for.group(2))
+            if items:
+                sh_vars[m_for.group(1)] = items
+            continue
+        m_var = VAR_ASSIGN_RE.match(s)
+        if m_var:
+            sh_vars[m_var.group(1)] = [m_var.group(2).strip("'\"")]
+            continue
+        if CONTROL_FLOW_SKIP_RE.match(s):
+            continue
         m_cd = re.match(r"^cd\s+(.+)$", s)
         if m_cd:
-            raw_target = m_cd.group(1).strip().strip('"').strip("'")
-            cur_group_dir = raw_target
-            try:
-                resolved_cd = (wdir / os.path.expanduser(raw_target)).resolve()
-                if resolved_cd != wdir.resolve():
-                    _add_unique(cd_dirs, m_cd.group(1).strip())
-                else:
-                    cur_group_dir = ""
-            except Exception:
-                _add_unique(cd_dirs, m_cd.group(1).strip())
+            expanded_targets = _expand_sh_vars(m_cd.group(1), sh_vars)
+            if len(expanded_targets) > 1:
+                cur_group_dir = ", ".join(expanded_targets)
+                for t in expanded_targets:
+                    _add_unique(cd_dirs, t)
+            else:
+                raw_target = expanded_targets[0]
+                cur_group_dir = raw_target
+                try:
+                    exp_path = os.path.expanduser(raw_target.replace("$HOME", str(Path.home())))
+                    resolved_cd = (wdir / exp_path).resolve()
+                    if resolved_cd != wdir.resolve():
+                        _add_unique(cd_dirs, raw_target)
+                    else:
+                        cur_group_dir = ""
+                except Exception:
+                    _add_unique(cd_dirs, raw_target)
             continue
         if re.match(r"^git\s+", s):
             _add_unique(git_cmds, s)
@@ -368,7 +418,7 @@ def summarize_script_actions(script_text: str, work_dir: Path | None = None) -> 
             _add_unique(writes, s)
             add_op("write", s)
             continue
-        if re.match(r"^(?:cat|grep|ls|head|tail|find|which|command\s+-v|wc|stat|file|sed\s+-n)\s+", s):
+        if re.match(r"^(?:cat|nl|grep|ls|head|tail|find|which|command\s+-v|wc|stat|file|sed\s+-n)\s+", s):
             _add_unique(reads, s)
             add_op("read", s)
             continue
@@ -410,6 +460,8 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
     sh_eof_token: str | None = None
     sh_scan_body: bool = False
     cur_cd_dir: str = ""
+    cd_stack: list[str] = []
+    sh_vars: dict[str, list[str]] = {}
     for idx, raw_line in enumerate(script_text.splitlines(), start=1):
         stripped = raw_line.strip()
         if py_eof_token is not None:
@@ -436,9 +488,25 @@ def scan_script_risks(script_text: str) -> list[dict[str, object]]:
 
         if not stripped or stripped.startswith("#"):
             continue
+        if stripped == "(":
+            cd_stack.append(cur_cd_dir)
+            continue
+        if stripped == ")":
+            cur_cd_dir = cd_stack.pop() if cd_stack else ""
+            continue
+        m_for = FOR_LOOP_RE.match(stripped)
+        if m_for:
+            items = _parse_for_items(m_for.group(2))
+            if items:
+                sh_vars[m_for.group(1)] = items
+            continue
+        m_var = VAR_ASSIGN_RE.match(stripped)
+        if m_var:
+            sh_vars[m_var.group(1)] = [m_var.group(2).strip("'\"")]
+            continue
         m_cd = re.match(r"^cd\s+(.+)$", stripped)
         if m_cd:
-            cur_cd_dir = m_cd.group(1).strip().strip('"').strip("'")
+            cur_cd_dir = ", ".join(_expand_sh_vars(m_cd.group(1), sh_vars))
             continue
         m_py = PY_HEREDOC_START_RE.search(stripped)
         if m_py:
