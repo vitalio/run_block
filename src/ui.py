@@ -79,15 +79,8 @@ def format_safety_box(
     summary: dict[str, object] | None = None,
     note: str = "",
 ) -> tuple[str, int, int]:
-    meta_str = str(summary.get('meta', '')) if summary else ''
-    if findings:
-        plural = "s" if len(findings) != 1 else ""
-        hdr_detail = f"{meta_str} · {len(findings)} safety warning{plural}" if meta_str else f"{len(findings)} safety warning{plural}"
-        title = f" {label} · BLOCK PLAN ({hdr_detail}) "
-    elif meta_str:
-        title = f" {label} · BLOCK PLAN ({meta_str}) "
-    else:
-        title = f" {label} · BLOCK PLAN "
+    meta_str = str(summary.get("meta", "")) if summary else ""
+    title = f" {label} · BLOCK PLAN "
     prompt_suffix = "[Y/n/v(iew)]:" if default_yes else "[y/n/v(iew)]:"
     prompt_line = f"-> Execute this block? {prompt_suffix}"
     term_cols = shutil.get_terminal_size((100, 24)).columns
@@ -100,6 +93,8 @@ def format_safety_box(
         if wdir:
             wline = f"Workdir: {wdir}" + (f"  (cd -> {', '.join(cd_dirs)})" if cd_dirs else "")
             content_lines.extend(textwrap.wrap(wline, width=max_row_len) or [wline])
+        if meta_str:
+            content_lines.append(f"Script: {meta_str}")
         ops = list(summary.get("operations") or [])
         op_groups = list(summary.get("operation_groups") or [])
         has_subdirs = any(bool(g_dir) for g_dir, _ in op_groups)
@@ -120,12 +115,9 @@ def format_safety_box(
     if findings:
         if content_lines:
             content_lines.append("")
-            content_lines.append("Safety warnings:")
-            w_indent = "  "
-        else:
-            w_indent = ""
+        content_lines.append(f"Safety warnings ({len(findings)}):")
         warn_items = [(str(f["category"]), str(f["snippet"])) for f in findings]
-        content_lines.extend(_wrap_labeled_items(warn_items, max_row_len, indent=w_indent))
+        content_lines.extend(_wrap_labeled_items(warn_items, max_row_len, indent="  "))
 
     if note.strip():
         if content_lines:
@@ -364,7 +356,7 @@ def confirm_execution(
             status_line = f"✓ Running {run_target} ..." if approved else f"✗ Aborted (--retry {label})"
             tty_w.write(f"\r{pad_box_line(status_line, inner_width)}\n{bottom}\n")
             tty_w.flush()
-            return approved, ("" if approved else f"aborted by user (re-run with: {prog_name()} --retry {label})")
+            return approved, ("" if approved else "USER_ABORTED")
     except OSError:
         return True, note
 
@@ -494,6 +486,24 @@ def pad_box_line(text: str, inner_width: int) -> str:
     return f"│ {text}{' ' * pad} │"
 
 
+def build_box_body_lines(
+    out_path: Path,
+    rc: int | None = None,
+    stats: str | None = None,
+    extra_lines: list[str] | None = None,
+) -> list[str]:
+    if extra_lines is not None:
+        body_lines = list(extra_lines)
+    else:
+        body_lines = []
+        if rc is not None and rc != 0:
+            body_lines.append(f"Exit: {rc}")
+        body_lines.append(f"Output: {out_path}")
+    if stats and not any(line.startswith("Stats:") for line in body_lines):
+        body_lines.append(f"Stats: {stats}")
+    return body_lines
+
+
 def format_clipboard_box(
     label: str,
     out_path: Path,
@@ -503,14 +513,8 @@ def format_clipboard_box(
     title_kind: str = "END",
     extra_lines: list[str] | None = None,
 ) -> tuple[str, int, int]:
-    details: list[str] = []
-    if rc is not None and rc != 0:
-        details.append(f"exit {rc}")
-    if stats:
-        details.append(stats)
-    detail_str = f" ({' · '.join(details)})" if details else ""
-    title = f" {label} · {title_kind}{detail_str} "
-    body_lines = list(extra_lines) if extra_lines else [f"Output: {out_path}"]
+    title = f" {label} · {title_kind} "
+    body_lines = build_box_body_lines(out_path, rc=rc, stats=stats, extra_lines=extra_lines)
     prompt_line = "-> Copy to clipboard? [Enter/v(iew)/Esc]:"
     copied_line = f"✓ Copied {out_path} to clipboard."
     inner_width = max(

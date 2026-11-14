@@ -72,16 +72,15 @@ def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
     wdir = get_work_dir(sdir).resolve()
     body_lines = [
         f"Next-Block: {session_name}/1",
-        f"Workdir:    {wdir}",
-        f"Bundle:     {bundle_path}",
+        f"Workdir: {wdir}",
+        f"Bundle: {bundle_path}",
     ]
     label0 = f"{session_name}/0"
     if not in_run_block() and sys.stdout.isatty() and clipboard_mode() == "prompt" and clipboard_command(bundle_path) is not None:
         offer_clipboard_copy(label0, bundle_path, ok=True, rc=0, title_kind="START BUNDLE", extra_lines=body_lines)
     else:
-        st = stats_line(bundle_path)
-        hdr = f"{label0} · START BUNDLE ({st})" if st else f"{label0} · START BUNDLE"
-        sys.stdout.write(format_info_box(hdr, body_lines) + "\n")
+        full_body = build_box_body_lines(bundle_path, rc=0, stats=stats_line(bundle_path), extra_lines=body_lines)
+        sys.stdout.write(format_info_box(f"{label0} · START BUNDLE", full_body) + "\n")
         sys.stdout.flush()
         if not in_run_block():
             offer_clipboard_copy(label0, bundle_path, ok=True, rc=0, title_kind="START BUNDLE", extra_lines=body_lines)

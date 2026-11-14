@@ -33,7 +33,7 @@ def start_session(name: str | None = None, force: bool = False) -> Path:
             if sys.stdout.isatty() and not no_clipboard():
                 ok = prompt_yes_no_box(
                     f"{name} · SESSION ALREADY EXISTS",
-                    [f"Session directory already exists: {sdir}"],
+                    [f"Directory: {sdir}"],
                     f"Overwrite session {name}?",
                     default_yes=False,
                     yes_status=f"✓ Overwriting session {name}.",
@@ -84,18 +84,34 @@ def not_run_exit(
     clean_msg = msg.strip()
     prefix = f"[{label}] NOT RUN:"
     detail = clean_msg[len(prefix):].strip() if clean_msg.startswith(prefix) else clean_msg
-    if headless or os.environ.get("RUN_BLOCK_HEADLESS") == "1":
-        sys.stdout.write(line)
-    else:
-        sys.stdout.write(format_info_box(f"{label} · NOT RUN", [detail]) + "\n")
-    sys.stdout.flush()
     err_target = sdir / f"{step_name}.error.txt" if out_path.exists() else out_path
     try:
         write_private(err_target, line, overwrite=True)
-        if not headless and os.environ.get("RUN_BLOCK_HEADLESS") != "1":
-            offer_clipboard_copy(label, err_target, ok=False, rc=rc)
     except Exception:
         pass
+    is_headless = headless or os.environ.get("RUN_BLOCK_HEADLESS") == "1"
+    if is_headless:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        return rc
+    body_lines = [
+        f"Reason: {detail}",
+        f"Output: {err_target}",
+    ]
+    can_prompt_clip = (
+        not in_run_block()
+        and sys.stdout.isatty()
+        and clipboard_mode() == "prompt"
+        and clipboard_command(err_target) is not None
+    )
+    if can_prompt_clip:
+        offer_clipboard_copy(label, err_target, ok=False, rc=rc, title_kind="NOT RUN", extra_lines=body_lines)
+    else:
+        full_body = build_box_body_lines(err_target, rc=rc, stats=stats_line(err_target), extra_lines=body_lines)
+        sys.stdout.write(format_info_box(f"{label} · NOT RUN", full_body) + "\n")
+        sys.stdout.flush()
+        if not in_run_block():
+            offer_clipboard_copy(label, err_target, ok=False, rc=rc, title_kind="NOT RUN", extra_lines=body_lines)
     return rc
 
 
@@ -138,15 +154,33 @@ def run_script(
         msg = chk.stdout or "syntax check failed\n"
         end_line = f"[{label}] END (syntax error, exit {chk.returncode})\n"
         full_output = start_line + msg + end_line
+        write_private(out_path, full_output)
         if headless:
             sys.stdout.write(full_output)
+            sys.stdout.flush()
+            return chk.returncode
+        err_lines = msg.rstrip("\n").splitlines() or ["syntax check failed"]
+        box_lines = [
+            f"Exit: {chk.returncode}",
+            f"Script: {script_path}",
+            f"Output: {out_path}",
+            f"Error: {err_lines[0]}",
+            *(f"  {eline}" for eline in err_lines[1:]),
+        ]
+        can_prompt_clip = (
+            not in_run_block()
+            and sys.stdout.isatty()
+            and clipboard_mode() == "prompt"
+            and clipboard_command(out_path) is not None
+        )
+        if can_prompt_clip:
+            offer_clipboard_copy(label, out_path, ok=False, rc=chk.returncode, title_kind="SYNTAX ERROR", extra_lines=box_lines)
         else:
-            box_lines = [f"Script: {script_path}", *(msg.rstrip("\n").splitlines())]
-            sys.stdout.write(format_info_box(f"{label} · SYNTAX ERROR (exit {chk.returncode})", box_lines) + "\n")
-        sys.stdout.flush()
-        write_private(out_path, full_output)
-        if not headless:
-            offer_clipboard_copy(label, out_path, ok=False, rc=chk.returncode)
+            full_body = build_box_body_lines(out_path, rc=chk.returncode, stats=stats_line(out_path), extra_lines=box_lines)
+            sys.stdout.write(format_info_box(f"{label} · SYNTAX ERROR", full_body) + "\n")
+            sys.stdout.flush()
+            if not in_run_block():
+                offer_clipboard_copy(label, out_path, ok=False, rc=chk.returncode, title_kind="SYNTAX ERROR", extra_lines=box_lines)
         return chk.returncode
 
     aborted_marker = script_path.with_suffix(".aborted")
@@ -156,6 +190,8 @@ def run_script(
     )
     if not approved:
         write_private(aborted_marker, "aborted\n", overwrite=True)
+        if abort_reason == "USER_ABORTED":
+            return 130
         reason_str = abort_reason or f"aborted by user (re-run with: {prog_name()} --retry {label})"
         return not_run_exit(
             label, script_path.parent, script_path.stem, out_path, f"[{label}] NOT RUN: {reason_str}", rc=130, headless=headless
@@ -260,10 +296,8 @@ def run_script(
         sys.stdout.write(end_line)
         sys.stdout.flush()
     elif in_run_block() or not sys.stdout.isatty() or clipboard_mode() != "prompt" or clipboard_command(clip_target) is None:
-        st = stats_line(clip_target)
-        hdr_det = (" · ".join(x for x in (f"exit {rc}" if rc != 0 else "", st or "") if x))
-        hdr = f"{label} · END ({hdr_det})" if hdr_det else f"{label} · END"
-        sys.stdout.write("\n" + format_info_box(hdr, [f"Output: {clip_target}"]) + "\n")
+        end_body = build_box_body_lines(clip_target, rc=rc, stats=stats_line(clip_target))
+        sys.stdout.write("\n" + format_info_box(f"{label} · END", end_body) + "\n")
         sys.stdout.flush()
     if not headless:
         offer_clipboard_copy(label, clip_target, ok=(rc == 0), rc=rc)
@@ -290,9 +324,12 @@ def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
         aborted_marker.unlink(missing_ok=True)
     elif script_path.exists() or out_path.exists():
         if sys.stdout.isatty() and not no_clipboard() and not headless:
+            existing_lines = [f"Script: {script_path}"]
+            if out_path.exists():
+                existing_lines.append(f"Output: {out_path}")
             if prompt_yes_no_box(
                 f"{label} · STEP ALREADY EXISTS",
-                [f"Step file already exists: {script_path}"],
+                existing_lines,
                 f"Overwrite and re-run {label}?",
                 default_yes=False,
                 yes_status=f"✓ Overwriting {label}.",
@@ -300,6 +337,8 @@ def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
             ):
                 overwrite = True
                 out_path.unlink(missing_ok=True)
+            else:
+                return 2
         if not overwrite:
             return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: step already exists — output: {out_path}", headless=headless)
     if step_num > 1 and not _find_step_script(sdir, str(step_num - 1)).exists():
@@ -308,12 +347,14 @@ def cmd_normal(ref: str, payload: str, auto_yes: bool = False) -> int:
         if sys.stdout.isatty() and not no_clipboard() and not headless:
             allow_skip = prompt_yes_no_box(
                 f"{label} · MISSING PREVIOUS STEP",
-                [f"Previous step {prev_label} has not been run yet."],
+                [f"Missing: {prev_label}"],
                 f"Run {label} anyway?",
                 default_yes=False,
                 yes_status=f"✓ Proceeding with {label} (skipped {prev_label}).",
                 no_status=f"✗ Canceled {label} (run {prev_label} first).",
             )
+            if not allow_skip:
+                return 2
         if not allow_skip:
             return not_run_exit(
                 label,
@@ -578,8 +619,8 @@ def cmd_clean(argv: list[str]) -> int:
             "CLEAN SESSIONS",
             [
                 f"Directory: {base}",
-                f"Sessions to remove ({len(to_remove)}): {names}",
-                f"Disk space to free: {freed_bytes:,} bytes",
+                f"Remove: {len(to_remove)} session(s) ({names})",
+                f"Free: {freed_bytes:,} bytes",
             ],
             f"Delete {len(to_remove)} session(s)?",
             default_yes=False,

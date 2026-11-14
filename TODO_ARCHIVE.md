@@ -38,3 +38,5 @@ Add extensible plugin hooks for pre-execution block analysis (including LLM-base
 # ✅ [DONE] F9: Audit run_block and todo_md architecture against unix-philosophy.md — *412de9c*
 
 Review CLI flags, stdin/stdout/stderr separation, and composability of run_block and todo_md against core/unix-philosophy.md.
+
+# ✅ [DONE] F12: Standardize minimalist TUI box titles and Key: Value body fields; suppress duplicate boxes on interactive decline — *2026-11-14, Release v0.16.3*

@@ -12,6 +12,7 @@ import contextlib
 import io
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -160,9 +161,11 @@ class TestRunBlock(unittest.TestCase):
         )
         summary = self.mod.summarize_script_actions(script)
         box, _, _ = self.mod.format_safety_box("s1/2", findings, summary=summary)
-        self.assertIn("6 safety warnings)", box)
+        self.assertIn("┌─ s1/2 · BLOCK PLAN ─", box)
+        self.assertNotIn("BLOCK PLAN (", box)
+        self.assertIn("Script: 7 lines, bash", box)
         self.assertIn("Operations:", box)
-        self.assertIn("Safety warnings:", box)
+        self.assertIn("Safety warnings (6):", box)
         self.assertNotIn("Line ", box)
         self.assertIn("[y/n/v(iew)]:", box)
         self.assertEqual(len({self.mod.display_width(l) for l in box.splitlines()}), 1)
@@ -228,7 +231,14 @@ class TestRunBlock(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         out = (self.tmp / "s1/1.txt").read_text(encoding="utf-8")
         self.assertIn("END (syntax error", out)
-        box_lines = buf.getvalue().strip().splitlines()
+        rendered = buf.getvalue()
+        self.assertIn("┌─ s1/1 · SYNTAX ERROR ─", rendered)
+        self.assertNotIn("SYNTAX ERROR (", rendered)
+        self.assertIn("Exit: ", rendered)
+        self.assertIn("Script: ", rendered)
+        self.assertIn("Output: ", rendered)
+        self.assertIn("Error: ", rendered)
+        box_lines = rendered.strip().splitlines()
         self.assertEqual(len({self.mod.display_width(l) for l in box_lines}), 1)
 
     def test_stats_and_clipboard_box(self):
@@ -237,12 +247,20 @@ class TestRunBlock(unittest.TestCase):
         s = self.mod.stats_line(f)
         self.assertIn("1 line · 6 B · ~2 tokens", s)
         box, _, _ = self.mod.format_clipboard_box("s2/1", f, stats=s)
-        self.assertIn("s2/1 · END (1 line · 6 B · ~2 tokens)", box)
+        self.assertIn("┌─ s2/1 · END ─", box)
+        self.assertNotIn("END (", box)
         self.assertIn(f"Output: {f}", box)
+        self.assertIn("Stats: 1 line · 6 B · ~2 tokens", box)
         self.assertIn("-> Copy to clipboard? [Enter/v(iew)/Esc]:", box)
         lines = box.splitlines()
-        self.assertEqual(len(lines), 5)
+        self.assertEqual(len(lines), 6)
         self.assertEqual(len({self.mod.display_width(l) for l in lines}), 1)
+
+        box_err, _, _ = self.mod.format_clipboard_box("s2/2", f, ok=False, rc=2, stats=s)
+        self.assertIn("┌─ s2/2 · END ─", box_err)
+        self.assertIn("Exit: 2", box_err)
+        self.assertIn(f"Output: {f}", box_err)
+        self.assertIn("Stats: 1 line · 6 B · ~2 tokens", box_err)
 
     def test_self_update_and_check_update(self):
         installed = self.tmp / "my_block"
@@ -435,13 +453,40 @@ class TestRunBlock(unittest.TestCase):
         tty_r = io.StringIO("y\n")
         ok = self.mod.prompt_yes_no_box(
             "s1/2 · MISSING PREVIOUS STEP",
-            ["Previous step s1/1 has not been run yet."],
+            ["Missing: s1/1"],
             "Run s1/2 anyway?",
             default_yes=False,
             tty_streams=(tty_w, tty_r),
         )
         self.assertTrue(ok)
         self.assertIn("✓ Confirmed by user.", tty_w.getvalue())
+
+        # Verify interactive declines do not emit duplicate NOT RUN / END boxes
+        with unittest.mock.patch.object(self.mod, "no_clipboard", return_value=False), \
+             unittest.mock.patch.object(self.mod, "prompt_yes_no_box", return_value=False):
+            buf_dec = io.StringIO()
+            buf_dec.isatty = lambda: True  # type: ignore[method-assign]
+            with contextlib.redirect_stdout(buf_dec):
+                rc_skip_dec = self.mod.cmd_normal("s9/2", "echo hi\n")
+            self.assertEqual(rc_skip_dec, 2)
+            self.assertEqual(buf_dec.getvalue(), "")
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.mod.cmd_normal("s9/1", "echo step1\n", auto_yes=True)
+            buf_dup_dec = io.StringIO()
+            buf_dup_dec.isatty = lambda: True  # type: ignore[method-assign]
+            with contextlib.redirect_stdout(buf_dup_dec):
+                rc_dup_dec = self.mod.cmd_normal("s9/1", "echo step1_again\n")
+            self.assertEqual(rc_dup_dec, 2)
+            self.assertEqual(buf_dup_dec.getvalue(), "")
+
+        with unittest.mock.patch.object(self.mod, "confirm_execution", return_value=(False, "USER_ABORTED")):
+            buf_abort = io.StringIO()
+            with contextlib.redirect_stdout(buf_abort):
+                rc_abort = self.mod.cmd_normal("s9/2", "echo step2\n")
+            self.assertEqual(rc_abort, 130)
+            self.assertEqual(buf_abort.getvalue(), "")
+            self.assertTrue((self.tmp / "s9/2.aborted").is_file())
 
     def test_powershell_mode_and_agents(self):
         fake_pwsh = self.tmp / "pwsh"
