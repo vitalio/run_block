@@ -48,18 +48,18 @@ def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
             session_arg = argv[i + 1]
             i += 2
         elif a.startswith("-"):
-            raise SystemExit(f"{prog}: usage: agents_bundle | {prog} [--start] [--session NAME] [--force]")
+            raise SystemExit(f"{prog}: usage: <command> | {prog} [--start] [--session NAME] [--force]")
         else:
             if session_arg is None and re.fullmatch(r"s\d+", a):
                 session_arg = a
                 i += 1
             else:
-                raise SystemExit(f"{prog}: usage: agents_bundle | {prog} [--start] [--session NAME] [--force]")
+                raise SystemExit(f"{prog}: usage: <command> | {prog} [--start] [--session NAME] [--force]")
 
     if stdin_text is None:
         if sys.stdin.isatty():
             sys.stderr.write(
-                f"{prog}: --start expects a context bundle on stdin (e.g. 'agents_bundle | {prog}')\n"
+                f"{prog}: --start expects a context bundle on stdin (e.g. '{prog} --start < context.txt')\n"
             )
             return 2
         stdin_text = sys.stdin.read()

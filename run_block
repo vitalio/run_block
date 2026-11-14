@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # run_block-repo: vitalio/run_block
 """Usage:
-  agents_bundle | {prog}             Start a new session from stdin context bundle into {base_dir}/<session>/0.txt
+  <command> | {prog}                 Start a new session from stdin context bundle into {base_dir}/<session>/0.txt
   {prog} [-y] <session>/<step>       Run block from stdin (-y/--yes for non-interactive headless mode)
   {prog} --plan                      Analyze script from stdin and print JSON execution & safety plan
   {prog} --fix [-y] <session>/<ref>  Patch <ref> script via Python on stdin and run as <ref>_N
@@ -51,7 +51,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.16.3"
+VERSION = "0.16.4"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 
@@ -324,9 +324,6 @@ EMBEDDED_RULES: dict[str, tuple[str, str]] = {'blocks/bash': ('Bash terminal blo
                  'second time.\n'
                  '- **Isolated shell:** Each block runs in a fresh `bash` process starting in '
                  '`Workdir` (`cd` and shell variables do not persist across blocks).\n'
-                 '- **Focused task handoff:** To build a new session context bundle (`0.txt`) for '
-                 'a focused task chat, run `agents_bundle -p "<task prompt>" [file ...] | '
-                 '{cmd:run_block}`.\n'
                  '\n'
                  '### Fixing a Failed Block (`--fix <session>/<target>`) — ALWAYS PREFER OVER '
                  'REWRITING\n'
@@ -423,9 +420,6 @@ EMBEDDED_RULES: dict[str, tuple[str, str]] = {'blocks/bash': ('Bash terminal blo
                  'second time.\n'
                  '- **Isolated shell:** Each block runs in a fresh `pwsh` process starting in '
                  '`Workdir` (`cd` and shell variables do not persist across blocks).\n'
-                 '- **Focused task handoff:** To build a new session context bundle (`0.txt`) for '
-                 'a focused task chat, run `agents_bundle -p "<task prompt>" [file ...] | '
-                 '{cmd:run_block}`.\n'
                  '\n'
                  '### Fixing a Failed Block (`--fix <session>/<target>`) — ALWAYS PREFER OVER '
                  'REWRITING\n'
@@ -2282,18 +2276,18 @@ def cmd_start(argv: list[str], stdin_text: str | None = None) -> int:
             session_arg = argv[i + 1]
             i += 2
         elif a.startswith("-"):
-            raise SystemExit(f"{prog}: usage: agents_bundle | {prog} [--start] [--session NAME] [--force]")
+            raise SystemExit(f"{prog}: usage: <command> | {prog} [--start] [--session NAME] [--force]")
         else:
             if session_arg is None and re.fullmatch(r"s\d+", a):
                 session_arg = a
                 i += 1
             else:
-                raise SystemExit(f"{prog}: usage: agents_bundle | {prog} [--start] [--session NAME] [--force]")
+                raise SystemExit(f"{prog}: usage: <command> | {prog} [--start] [--session NAME] [--force]")
 
     if stdin_text is None:
         if sys.stdin.isatty():
             sys.stderr.write(
-                f"{prog}: --start expects a context bundle on stdin (e.g. 'agents_bundle | {prog}')\n"
+                f"{prog}: --start expects a context bundle on stdin (e.g. '{prog} --start < context.txt')\n"
             )
             return 2
         stdin_text = sys.stdin.read()

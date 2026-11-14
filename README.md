@@ -4,7 +4,7 @@
 
 `run_block` is a zero-dependency Python 3 CLI that connects any chat LLM to your local
 terminal without API keys or background daemons. It receives a session context bundle on `stdin`
-(`agents_bundle | run_block` -> `/tmp/run_block/<session>/0.txt`) and executes numbered
+(`<command> | run_block` -> `/tmp/run_block/<session>/0.txt`) and executes numbered
 Bash or PowerShell blocks (`<session>/1`, `<session>/2`, ...) with syntax validation, a
 pre-execution `BLOCK PLAN` safety scanner, PTY streaming, and one-keystroke clipboard copy
 with Claude/GPT/Gemini token counts.
@@ -23,14 +23,14 @@ curl -fsSL https://raw.githubusercontent.com/vitalio/run_block/main/install.sh |
 irm https://raw.githubusercontent.com/vitalio/run_block/main/install.ps1 | iex
 ```
 
-## Starting a Session (`agents_bundle | run_block`)
+## Starting a Session
 
-Pipe any context bundle (for example from `agents_bundle`) into `run_block` to initialize
+Pipe any context bundle on `stdin` into `run_block` to initialize
 `/tmp/run_block/<session>/0.txt` and copy it to your clipboard:
 
 ```bash
-agents_bundle | run_block
-agents_bundle -p "Let's work on task F7" src/runner.py | run_block --start
+cat context.txt | run_block
+run_block --start --session s1 < context.txt
 ```
 
 ## Running and Fixing Blocks
@@ -87,7 +87,7 @@ RUN_FIX
 
 | Command | Description |
 | :--- | :--- |
-| `agents_bundle \| run_block` | Start a new session from `stdin` context bundle into `<session>/0.txt` |
+| `<command> \| run_block` | Start a new session from `stdin` context bundle into `<session>/0.txt` |
 | `run_block [-y] <session>/<step>` | Run a block from `stdin` (`-y` for non-interactive headless mode) |
 | `run_block --plan` | Analyze script from `stdin` and print JSON execution and safety plan |
 | `run_block --fix [-y] <session>/<target>` | Patch `<target>` script via Python on `stdin` and run as `<target>_N` |
