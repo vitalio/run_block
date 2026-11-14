@@ -11,7 +11,7 @@ git status -sb
 
 ### CRITICAL — STRICT LAYOUT & MARKDOWN FENCE RULES
 
-1. ONE BLOCK PER MESSAGE, ALWAYS AT THE VERY END (BATCH COMMANDS INSIDE IT): Batch all related file reads, edits, and checks into a single block (never output two blocks or read one file per turn). Output zero trailing text after the closing fence and stop generating immediately.
+1. ONE BLOCK PER MESSAGE, ALWAYS AT THE VERY END (BATCH COMMANDS INSIDE IT): Batch all related file reads, edits, and checks into a single block (never output two blocks or read one file per turn). Once you emit the closing fence of that single block, end your message immediately — never anticipate or simulate command output, never continue reasoning after the block, and wait for the user to reply with `[<session>/<step>]` results before taking the next step.
 2. COLUMN-0 FENCES & SEPARATE-LINE HEREDOC TERMINATOR: Leave an empty line before the opening `powershell` fence. Start the opening fence, `@'`, `'@ | {cmd:run_block} ...`, and the closing fence at column 0, each on its own separate line.
 3. NO INNER TRIPLE BACKTICKS OR HEREDOC DELIMITERS (NEVER BREAK THE FENCE): Never write three consecutive backticks or `'@` at column 0 inside the script body (use targeted `text.replace(old, new, 1)` for Markdown edits, or build dynamically via Python `F3 = chr(96) * 3`).
 4. ISOLATED SHELL: Each block runs in a fresh `pwsh` process in `Workdir` (`cd` and shell variables do not persist across blocks).

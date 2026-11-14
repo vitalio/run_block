@@ -164,7 +164,7 @@ class TestRunBlock(unittest.TestCase):
         box, _, _ = self.mod.format_safety_box("s1/2", findings, summary=summary)
         self.assertIn("┌─ s1/2 · BLOCK PLAN ─", box)
         narrow_script = "git pull --rebase || true\ngit status -sb\ngit log --oneline -5\ngit diff HEAD~3..HEAD --stat\n"
-        narrow_sum = self.mod.summarize_script_actions(narrow_script, Path("/home/vitaly/run_block"))
+        narrow_sum = self.mod.summarize_script_actions(narrow_script, ROOT)
         narrow_sp = Path("/tmp/run_block/s28/10.sh")
         n_box, n_inner, _ = self.mod.format_safety_box(
             "s28/10", [], default_yes=True, summary=narrow_sum, script_path=narrow_sp

@@ -52,7 +52,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.17.8"
+VERSION = "0.17.9"
 REPO_MARKER = "run_block-repo: vitalio/run_block"
 DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/vitalio/run_block/main/run_block"
 
@@ -300,8 +300,10 @@ EMBEDDED_RULES: dict[str, tuple[str, str]] = {'blocks/bash': ('Bash terminal blo
                  '\n'
                  '1. ONE BLOCK PER MESSAGE, ALWAYS AT THE VERY END (BATCH COMMANDS INSIDE IT): '
                  'Batch all related file reads, edits, and checks into a single block (never '
-                 'output two blocks or read one file per turn). Output zero trailing text after '
-                 'the closing fence and stop generating immediately.\n'
+                 'output two blocks or read one file per turn). Once you emit the closing fence of '
+                 'that single block, end your message immediately — never anticipate or simulate '
+                 'command output, never continue reasoning after the block, and wait for the user '
+                 'to reply with `[<session>/<step>]` results before taking the next step.\n'
                  '2. COLUMN-0 FENCES & SEPARATE-LINE HEREDOC TERMINATOR: Leave an empty line '
                  'before the opening `bash` fence. Start the opening fence, `{cmd:run_block} ... '
                  "<<'RUN_BLOCK'`, `RUN_BLOCK` (or `RUN_FIX`), and the closing fence at column 0, "
@@ -357,8 +359,10 @@ EMBEDDED_RULES: dict[str, tuple[str, str]] = {'blocks/bash': ('Bash terminal blo
                  '\n'
                  '1. ONE BLOCK PER MESSAGE, ALWAYS AT THE VERY END (BATCH COMMANDS INSIDE IT): '
                  'Batch all related file reads, edits, and checks into a single block (never '
-                 'output two blocks or read one file per turn). Output zero trailing text after '
-                 'the closing fence and stop generating immediately.\n'
+                 'output two blocks or read one file per turn). Once you emit the closing fence of '
+                 'that single block, end your message immediately — never anticipate or simulate '
+                 'command output, never continue reasoning after the block, and wait for the user '
+                 'to reply with `[<session>/<step>]` results before taking the next step.\n'
                  '2. COLUMN-0 FENCES & SEPARATE-LINE HEREDOC TERMINATOR: Leave an empty line '
                  "before the opening `powershell` fence. Start the opening fence, `@'`, `'@ | "
                  '{cmd:run_block} ...`, and the closing fence at column 0, each on its own '
