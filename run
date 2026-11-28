@@ -36,7 +36,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.42.1"
+VERSION = "0.42.2"
 REPO_MARKER = "run-block-repo: vitalio/run-block"
 LEGACY_REPO_MARKER = "run_block-repo: vitalio/run_block"
 REPO_MARKERS = (REPO_MARKER, LEGACY_REPO_MARKER)
@@ -9313,412 +9313,6 @@ def next_fix_step(step: str, sdir: Path | None = None) -> str:
     return f"{base}_{min_next}"
 
 
-_CMP_OP_SYMBOLS: dict[type[ast.cmpop], str] = {
-    ast.Eq: "==",
-    ast.NotEq: "!=",
-    ast.Lt: "<",
-    ast.LtE: "<=",
-    ast.Gt: ">",
-    ast.GtE: ">=",
-    ast.Is: "is",
-    ast.IsNot: "is not",
-    ast.In: "in",
-    ast.NotIn: "not in",
-}
-
-
-def _short_repr(val: object, limit: int = 80) -> str:
-    r = repr(val)
-    if len(r) > limit:
-        return r[: limit - 3] + "..."
-    return r
-
-
-def _is_text_expr(node: ast.AST) -> bool:
-    return isinstance(node, ast.Name) and node.id == "text"
-
-
-def _fix_anchor_values(fix_code: str, ns: dict[str, object]) -> list[str]:
-    """Evaluate anchor expressions in text.count/replace/find/index, `old in text`, and re.sub/subn/search/findall."""
-    try:
-        tree = ast.parse(fix_code)
-    except SyntaxError:
-        return []
-    found: list[str] = []
-
-    def _eval_and_add(arg_node: ast.expr) -> None:
-        try:
-            expr = ast.Expression(body=arg_node)
-            ast.fix_missing_locations(expr)
-            val = eval(compile(expr, "<fix_anchor>", "eval"), ns)
-        except Exception:
-            return
-        if isinstance(val, str) and val and val not in found:
-            found.append(val)
-
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-        ):
-            obj_id = node.func.value.id
-            attr = node.func.attr
-            if obj_id == "text" and attr in ("count", "replace", "find", "index") and node.args:
-                _eval_and_add(node.args[0])
-            elif obj_id == "re" and attr in ("sub", "subn") and len(node.args) >= 3 and _is_text_expr(node.args[2]):
-                _eval_and_add(node.args[0])
-            elif obj_id == "re" and attr in ("search", "findall", "match") and len(node.args) >= 2 and _is_text_expr(node.args[1]):
-                _eval_and_add(node.args[0])
-        elif isinstance(node, ast.Compare):
-            left = node.left
-            for op, comp in zip(node.ops, node.comparators):
-                if isinstance(op, (ast.In, ast.NotIn)) and _is_text_expr(comp):
-                    _eval_and_add(left)
-                left = comp
-    return found
-
-
-def _closest_anchor(old: str, text: str) -> tuple[float, int, float, str] | None:
-    """Return (score, 1-based line, runner-up score, window) of the best line window."""
-    old_lines = old.strip("\n").splitlines() or [old]
-    lines = text.splitlines()
-    size = len(old_lines)
-    if not lines or len(lines) > 20000:
-        return None
-    target = "\n".join(old_lines)
-    scores = []
-    for i in range(max(1, len(lines) - size + 1)):
-        window = "\n".join(lines[i : i + size])
-        scores.append((difflib.SequenceMatcher(None, target, window).ratio(), i + 1))
-    scores.sort(key=lambda s: (-s[0], s[1]))
-    best_score, best_line = scores[0]
-    runner_up = scores[1][0] if len(scores) > 1 else 0.0
-    window = "\n".join(lines[best_line - 1 : best_line - 1 + size])
-    return best_score, best_line, runner_up, window
-
-
-REPAIR_MIN_SCORE = 0.85
-REPAIR_MIN_MARGIN = 0.05
-
-
-def _replace_anchor_literal_in_fix(fix_code: str, old: str, new_old: str) -> str | None:
-    """Replace string literal(s) evaluating to `old` in `fix_code` regardless of quote style."""
-    try:
-        tree = ast.parse(fix_code)
-    except SyntaxError:
-        return None
-    lines_keep = fix_code.splitlines(keepends=True)
-    line_starts: list[int] = [0]
-    for ln in lines_keep:
-        line_starts.append(line_starts[-1] + len(ln))
-
-    def _pos_to_index(lineno: int, col_offset: int) -> int | None:
-        if not (1 <= lineno <= len(lines_keep)):
-            return None
-        raw_line = lines_keep[lineno - 1]
-        raw_bytes = raw_line.encode("utf-8")
-        if not (0 <= col_offset <= len(raw_bytes)):
-            return None
-        try:
-            char_col = len(raw_bytes[:col_offset].decode("utf-8"))
-        except UnicodeDecodeError:
-            return None
-        return line_starts[lineno - 1] + char_col
-
-    spans: list[tuple[int, int]] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value == old:
-            end_ln = getattr(node, "end_lineno", None)
-            end_col = getattr(node, "end_col_offset", None)
-            if node.lineno is None or node.col_offset is None or end_ln is None or end_col is None:
-                continue
-            s_idx = _pos_to_index(node.lineno, node.col_offset)
-            e_idx = _pos_to_index(end_ln, end_col)
-            if s_idx is not None and e_idx is not None and s_idx < e_idx:
-                spans.append((s_idx, e_idx))
-
-    if spans:
-        spans = sorted(set(spans))
-        for prev_sp, next_sp in zip(spans, spans[1:]):
-            if prev_sp[1] > next_sp[0]:
-                return None
-        patched = fix_code
-        replacement = repr(new_old)
-        for s_idx, e_idx in reversed(spans):
-            patched = patched[:s_idx] + replacement + patched[e_idx:]
-        return patched
-
-    if fix_code.count(repr(old)) == 1:
-        return fix_code.replace(repr(old), repr(new_old), 1)
-    return None
-
-
-def _propose_anchor_repair(
-    fix_code: str,
-    text: str,
-    ns: dict[str, object],
-    label: str,
-    sdir: Path,
-    *,
-    out_path: Path | None = None,
-    fix_path: Path | None = None,
-) -> tuple[str | None, bool]:
-    """Offer to swap a single missing anchor for its unambiguous closest match; return (new_fix_code, prompted)."""
-    missing = [v for v in _fix_anchor_values(fix_code, ns) if text.count(v) == 0]
-    if len(missing) != 1:
-        return None, False
-    old = missing[0]
-    close = _closest_anchor(old, text)
-    if close is None:
-        return None, False
-    score, line_no, runner_up, window = close
-    if score < REPAIR_MIN_SCORE or score - runner_up < REPAIR_MIN_MARGIN:
-        return None, False
-    new_old = window + ("\n" if old.endswith("\n") else "")
-    if new_old == old:
-        return None, False
-    patched = _replace_anchor_literal_in_fix(fix_code, old, new_old)
-    if patched is None or patched == fix_code:
-        return None, False
-    lines = [
-        f"Anchor not found; closest match at line {line_no} (similarity {score:.2f}):",
-        f"- {old.strip()}",
-        f"+ {window.strip()}",
-    ]
-    if out_path is not None:
-        lines.append(f"Output: {out_path}")
-    choice = prompt_yes_no_box(
-        "NOT RUN",
-        lines,
-        "Replace anchor with closest match?",
-        default_yes=False,
-        script_path=fix_path,
-        out_path=out_path,
-        label=label,
-        sdir=sdir,
-    )
-    if choice is not True:
-        return None, True
-    return patched, True
-
-
-def _anchor_in_referenced_file(old: str, script_text: str, work_dir: Path | None) -> str | None:
-    """Return a file path named in the script that contains the anchor text, if any."""
-    if work_dir is None:
-        return None
-    for token in dict.fromkeys(re.findall(r"[\w./-]+\.\w+", script_text)):
-        cand = work_dir / token
-        try:
-            if cand.is_file() and cand.stat().st_size < 2_000_000 and old in cand.read_text(encoding="utf-8"):
-                return token
-        except (OSError, UnicodeDecodeError):
-            continue
-    return None
-
-
-def _fix_anchor_hints(
-    fix_code: str, text: str, ns: dict[str, object], next_seq_ref: str, work_dir: Path | None = None
-) -> list[str]:
-    """Concrete `Hint:` lines for common --fix authoring mistakes."""
-    hints: list[str] = []
-    for old in _fix_anchor_values(fix_code, ns):
-        count = text.count(old)
-        if count == 1:
-            continue
-        if count > 1:
-            hints.append(
-                f"Hint: anchor {_short_repr(old, 40)} matches {count} times; "
-                "extend it with surrounding lines so it is unique"
-            )
-            continue
-        stripped = old.rstrip("\n")
-        if stripped != old and text.count(stripped) == 1:
-            hints.append("Hint: anchor matches once without its trailing newline; drop the trailing newline from old")
-            continue
-        repo_file = _anchor_in_referenced_file(old, text, work_dir)
-        if repo_file:
-            hints.append(
-                f"Hint: anchor is not in the target script but exists in {repo_file}; "
-                f"--fix patches only the script, so emit a fresh {next_seq_ref} block that edits that file"
-            )
-            continue
-        close = _closest_anchor(old, text)
-        if close is not None and close[0] >= 0.5:
-            hints.append(
-                f"Hint: closest match at line {close[1]} (similarity {close[0]:.2f}): "
-                f"{_short_repr(close[3].strip(), 60)}"
-            )
-        else:
-            hints.append(
-                f"Hint: anchor {_short_repr(old, 40)} not found in the target script; "
-                f"if the text lives elsewhere, emit a fresh {next_seq_ref} block instead of --fix"
-            )
-    try:
-        tree = ast.parse(fix_code)
-    except SyntaxError:
-        return hints
-    for node in tree.body:
-        if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)):
-            continue
-        func = node.value.func
-        if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
-            continue
-        name = f"{func.value.id}.{func.attr}"
-        if name in ("text.replace", "re.sub", "re.subn"):
-            hints.append(f"Hint: line {node.lineno}: result of {name}(...) is discarded; assign it back with text = ...")
-    return hints
-
-
-_SHELL_START_RE = re.compile(
-    r"^(?:#!|set\s+-|cd(?:\s|$)|git(?:\s|$)|python3?(?:\s|$)|echo(?:\s|$)|cat(?:\s|$)|grep(?:\s|$)"
-    r"|awk(?:\s|$)|sed(?:\s|$)|ls\b|pwd\b|todo(?:_md)?\b|run(?:_block)?\b"
-    r"|export\s|mkdir\s|rm\s|cp\s|mv\s|chmod\s|find\s|sh(?:\s|$)|bash(?:\s|$)|pytest\b|make\b)"
-)
-
-
-def _looks_like_shell_script(fix_code: str) -> bool:
-    nonblank = [ln.strip() for ln in fix_code.splitlines() if ln.strip() and not ln.strip().startswith("#")]
-    first = next((ln.strip() for ln in fix_code.splitlines() if ln.strip()), "")
-    if _SHELL_START_RE.match(first) or (nonblank and _SHELL_START_RE.match(nonblank[0])) or "<<'" in fix_code:
-        if "text" not in fix_code:
-            return True
-        if not any(tok in fix_code for tok in ("text.", "text =", "text=", "in text", ", text")):
-            return True
-    return False
-
-
-def _fix_syntax_context(fix_code: str) -> list[str]:
-    """Code snippet (+-2 lines) and escaping hint for a --fix payload that fails to parse."""
-    try:
-        ast.parse(fix_code)
-    except SyntaxError as exc:
-        lineno, msg = exc.lineno, exc.msg or ""
-    else:
-        return []
-    lines = fix_code.splitlines()
-    out: list[str] = []
-    if lineno is not None and 1 <= lineno <= len(lines):
-        out.append(f"Context (line {lineno}):")
-        for n in range(max(1, lineno - 2), min(len(lines), lineno + 2) + 1):
-            mark = ">" if n == lineno else " "
-            out.append(f"{mark} {n:>3} | {lines[n - 1]}")
-    if any(k in msg for k in ("unterminated", "continuation", "unicode", "unexpected character", "EOF")):
-        out.append(
-            "Hint: the RUN_FIX heredoc passes text literally; write newlines as \\n inside Python "
-            "string literals and build triple backticks via chr(96) * 3"
-        )
-    return out
-
-
-def _format_fix_exception(
-    exc: BaseException, fix_code: str, fix_path: Path, ns: dict[str, object]
-) -> str:
-    lineno: int | None = getattr(exc, "lineno", None)
-    tb = exc.__traceback__
-    while tb is not None:
-        if tb.tb_frame.f_code.co_filename == str(fix_path):
-            lineno = tb.tb_lineno
-        tb = tb.tb_next
-
-    lines = fix_code.splitlines()
-    stmt_node: ast.stmt | None = None
-    if lineno is not None:
-        try:
-            tree = ast.parse(fix_code)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.stmt) and hasattr(node, "lineno"):
-                    end_ln = getattr(node, "end_lineno", node.lineno) or node.lineno
-                    if node.lineno <= lineno <= end_ln:
-                        if stmt_node is None or node.lineno >= stmt_node.lineno:
-                            stmt_node = node
-        except Exception:
-            stmt_node = None
-
-    stmt_str = ""
-    if stmt_node is not None:
-        seg = ast.get_source_segment(fix_code, stmt_node)
-        if seg:
-            stmt_str = " ".join(l.strip() for l in seg.splitlines() if l.strip())
-    if not stmt_str and lineno is not None and 1 <= lineno <= len(lines):
-        stmt_str = lines[lineno - 1].strip()
-
-    actual_part = ""
-    if (
-        isinstance(exc, AssertionError)
-        and isinstance(stmt_node, ast.Assert)
-        and isinstance(stmt_node.test, ast.Compare)
-        and len(stmt_node.test.ops) == 1
-        and len(stmt_node.test.comparators) == 1
-    ):
-        op_sym = _CMP_OP_SYMBOLS.get(type(stmt_node.test.ops[0]))
-        if op_sym:
-            try:
-                left_expr = ast.Expression(body=stmt_node.test.left)
-                right_expr = ast.Expression(body=stmt_node.test.comparators[0])
-                ast.fix_missing_locations(left_expr)
-                ast.fix_missing_locations(right_expr)
-                left_val = eval(compile(left_expr, "<fix_eval>", "eval"), ns)
-                right_val = eval(compile(right_expr, "<fix_eval>", "eval"), ns)
-                actual_part = f" (actual: {_short_repr(left_val)} {op_sym} {_short_repr(right_val)})"
-            except Exception:
-                actual_part = ""
-
-    exc_name = type(exc).__name__
-    exc_msg = str(exc).strip()
-    if lineno is not None and stmt_str:
-        loc_str = f"at line {lineno}: {stmt_str}{actual_part}"
-        if exc_msg:
-            return f"fix raised {exc_name}: {exc_msg} ({loc_str})"
-        return f"fix raised {exc_name} {loc_str}"
-    if exc_msg:
-        return f"fix raised {exc_name}: {exc_msg}"
-    return f"fix raised {exc_name}"
-
-
-def _find_fix_chain_scripts(sdir: Path, base_step: str) -> list[tuple[str, Path]]:
-    chain: list[tuple[str, Path]] = []
-    base_script = _find_step_script(sdir, base_step)
-    if base_script.is_file():
-        chain.append((base_step, base_script))
-    if sdir.is_dir():
-        fix_items: list[tuple[int, str, Path]] = []
-        pat = re.compile(rf"^{re.escape(base_step)}_(\d+)$")
-        for d in sdir.iterdir():
-            m = pat.match(d.name)
-            if m and d.is_dir():
-                sub_idx = int(m.group(1))
-                step_name = f"{base_step}_{sub_idx}"
-                sp = _find_step_script(sdir, step_name)
-                if sp.is_file():
-                    fix_items.append((sub_idx, step_name, sp))
-        for _, step_name, p in sorted(fix_items, key=lambda x: x[0]):
-            chain.append((step_name, p))
-    return chain
-
-
-def _consecutive_failed_fixes(sdir: Path, base_step: str) -> int:
-    if not sdir.is_dir():
-        return 0
-    indices: set[int] = set()
-    pat = re.compile(rf"^{re.escape(base_step)}_(\d+)$")
-    for d in sdir.iterdir():
-        m = pat.match(d.name)
-        if m and d.is_dir():
-            indices.add(int(m.group(1)))
-    failures = 0
-    for idx in sorted(indices):
-        stem = f"{base_step}_{idx}"
-        outcome = _step_outcome(sdir, stem)["outcome"]
-        if outcome == "aborted":
-            continue
-        if outcome == "ok":
-            failures = 0
-        else:
-            failures += 1
-    return failures
-
-
 def write_private(path: Path, content: str, overwrite: bool = False) -> None:
     flags = os.O_WRONLY | os.O_CREAT | (os.O_TRUNC if overwrite else os.O_EXCL)
     fd = os.open(path, flags, 0o600)
@@ -10677,6 +10271,339 @@ def run_script(
     return rc
 
 
+def _guard_completed_session(
+    label: str,
+    sdir: Path,
+    step_name: str,
+    out_path: Path,
+    headless: bool,
+    fix_target: str | None = None,
+    auto_yes: bool = False,
+) -> int | None:
+    if not is_session_completed(sdir):
+        return None
+    session = sdir.name
+    if auto_yes or headless:
+        clear_session_completed(sdir)
+        return None
+    rc = 2
+    reason = f"session {session} is marked as completed (pass -y/--yes to reopen and run)"
+    if sys.stdout.isatty():
+        meta = read_session_meta(sdir)
+        def _completed_lines() -> list[str]:
+            hdr = format_session_header_lines(label=label, sdir=sdir)
+            comp_lines = [f"Completed: {meta.get('completed_at') or 'unknown'}"]
+            if meta.get("completed_note"):
+                comp_lines.append(f"Note: {meta['completed_note']}")
+            return [*hdr, "", *comp_lines]
+
+        choice = prompt_yes_no_box(
+            "SESSION COMPLETED",
+            _completed_lines(),
+            f"-> Reopen session {session}?",
+            default_yes=False,
+            yes_status="✓ Session reopened.",
+            no_status="✗ Session stays completed.",
+            content_builder=_completed_lines,
+            label=label,
+            sdir=sdir,
+        )
+        if choice is True:
+            clear_session_completed(sdir)
+            return None
+        rc = 130
+        reason = f"session {session} is marked as completed (not reopened)"
+    step_dir = _step_dir(sdir, step_name)
+    existed = step_dir.exists()
+    rc_out = not_run_exit(
+        label, sdir, step_name, out_path, f"[{label}] NOT RUN: {reason}", rc=rc, headless=headless, fix_target=fix_target
+    )
+    if not existed:
+        shutil.rmtree(step_dir, ignore_errors=True)
+    return rc_out
+
+
+def _reject_nested_step_execution(action: str) -> int:
+    prog = prog_name()
+    parent_ref = parent_run_block_ref()
+    where = f" (active step: {parent_ref[0]}/{parent_ref[1]})" if parent_ref else ""
+    sys.stderr.write(
+        f"{prog}: cannot run {action} from inside a running block{where}\n"
+    )
+    sys.stderr.flush()
+    return 2
+
+
+def _merge_protocol_violation_dicts(
+    primary: dict[str, object] | None,
+    secondary: dict[str, object] | None,
+) -> dict[str, object] | None:
+    if not primary and not secondary:
+        return None
+    p = dict(primary or {})
+    s = dict(secondary or {})
+    merged: dict[str, object] = {
+        "ignored_trailing_blocks": int(p.get("ignored_trailing_blocks") or 0)
+        + int(s.get("ignored_trailing_blocks") or 0),
+        "ignored_trailing_refs": list(p.get("ignored_trailing_refs") or [])
+        + list(s.get("ignored_trailing_refs") or []),
+        "duplicate_count": int(p.get("duplicate_count") or 0) + int(s.get("duplicate_count") or 0),
+        "glued_fence": bool(p.get("glued_fence") or s.get("glued_fence")),
+        "trailing_prose": "\n".join(
+            t for t in (
+                str(p.get("trailing_prose") or "").strip(),
+                str(s.get("trailing_prose") or "").strip(),
+            ) if t
+        ),
+        "repaired": bool(p.get("repaired") or s.get("repaired")),
+        "had_wrapper": bool(p.get("had_wrapper") or s.get("had_wrapper")),
+        "wrapped_tool_script": bool(p.get("wrapped_tool_script") or s.get("wrapped_tool_script")),
+    }
+    return merged
+
+
+def cmd_normal(
+    ref: str,
+    payload: str,
+    auto_yes: bool = False,
+    sandbox_override: str | None = None,
+    *,
+    reasoning: str | None = None,
+    renumbered_from: str | None = None,
+    reply_transport: str | None = None,
+    protocol_violations: dict[str, object] | None = None,
+) -> int:
+    if in_run_block():
+        return _reject_nested_step_execution(f"block {ref}")
+    payload, split_err, split_meta = _reassemble_split_payload_with_meta(payload)
+    merged_violations = _merge_protocol_violation_dicts(protocol_violations, split_meta)
+    headless = os.environ.get("RUN_BLOCK_HEADLESS") == "1"
+    session, step = parse_ref(ref, allow_fix_step=False)
+    step_num = int(step)
+    if step_num < 1:
+        raise SystemExit(f"{prog_name()}: step number must be >= 1")
+    base = ensure_base()
+    _warn_if_state_oversized(base)
+    sdir = base / session
+    sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    ensure_session_bundle(sdir, sandbox_mode=sandbox_override)
+    label = f"{session}/{step}"
+    step_dir = _step_dir(sdir, step)
+    script_path = _find_step_script(sdir, step)
+    out_path = step_dir / "out"
+    if split_err:
+        return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: {split_err}", headless=headless)
+    rc_done = _guard_completed_session(label, sdir, step, out_path, headless, auto_yes=auto_yes)
+    if rc_done is not None:
+        return rc_done
+
+    aborted_marker = step_dir / "aborted"
+
+    overwrite = aborted_marker.exists()
+    if overwrite:
+        out_path.unlink(missing_ok=True)
+        (step_dir / "meta.json").unlink(missing_ok=True)
+        aborted_marker.unlink(missing_ok=True)
+        for orig_p in (step_dir / "block.orig.sh", step_dir / "out.orig"):
+            orig_p.unlink(missing_ok=True)
+    elif script_path.exists() or out_path.exists():
+        if sys.stdout.isatty() and not no_clipboard() and not headless:
+            next_num = next_free_step(sdir, min_step=step_num + 1)
+            next_label = f"{session}/{next_num}"
+            existing_lines = [f"Next: {next_label}"]
+            if script_path.exists():
+                existing_lines.append(f"Script: {script_path}")
+            if out_path.exists():
+                existing_lines.append(f"Output: {out_path}")
+            def _step_exists_lines() -> list[str]:
+                hdr = format_session_header_lines(
+                    label=label, sdir=sdir, sandbox_mode=sandbox_override
+                )
+                return [*hdr, "", *existing_lines]
+
+            if out_path.exists():
+                choice = prompt_yes_no_box(
+                    "STEP ALREADY EXISTS",
+                    _step_exists_lines(),
+                    "Copy out to clipboard?",
+                    default_yes=True,
+                    no_status=f"✗ Keeping existing {label}.",
+                    script_path=script_path if script_path.exists() else None,
+                    out_path=out_path,
+                    renumber_label=next_label,
+                    renumber_status=f"✓ Renumbering {label} -> {next_label}.",
+                    content_builder=_step_exists_lines,
+                    copy_on_yes=True,
+                    label=label,
+                    sdir=sdir,
+                    sandbox_mode=sandbox_override,
+                    allow_overwrite=True,
+                )
+            else:
+                choice = prompt_yes_no_box(
+                    "STEP ALREADY EXISTS",
+                    _step_exists_lines(),
+                    f"Renumber to {next_label}?",
+                    default_yes=False,
+                    no_status=f"✗ Keeping existing {label}.",
+                    script_path=script_path if script_path.exists() else None,
+                    renumber_label=next_label,
+                    renumber_status=f"✓ Renumbering {label} -> {next_label}.",
+                    content_builder=_step_exists_lines,
+                    renumber_only=True,
+                    label=label,
+                    sdir=sdir,
+                    sandbox_mode=sandbox_override,
+                    allow_overwrite=True,
+                )
+            if choice == "renumber":
+                renumbered_from = label
+                payload = _rewrite_script_step_header(payload, label, next_label)
+                step = str(next_num)
+                step_num = next_num
+                label = next_label
+                step_dir = _step_dir(sdir, step)
+                script_path = _find_step_script(sdir, step)
+                out_path = step_dir / "out"
+                aborted_marker = step_dir / "aborted"
+                overwrite = False
+            elif choice == "overwrite":
+                out_path.unlink(missing_ok=True)
+                (step_dir / "meta.json").unlink(missing_ok=True)
+                (step_dir / "error").unlink(missing_ok=True)
+                aborted_marker.unlink(missing_ok=True)
+                for orig_p in (step_dir / "block.orig.sh", step_dir / "out.orig"):
+                    orig_p.unlink(missing_ok=True)
+                overwrite = True
+            elif choice == "copy":
+                return 0
+            else:
+                return 2
+        if not overwrite and renumbered_from is None:
+            return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: step already exists — output: {out_path}", headless=headless)
+    if step_num > 1 and renumbered_from is None and not _find_step_script(sdir, str(step_num - 1)).exists():
+        prev_label = f"{session}/{step_num - 1}"
+        if sys.stdout.isatty() and not no_clipboard() and not headless:
+            first_missing_num = first_missing_step(sdir)
+            first_missing_label = f"{session}/{first_missing_num}"
+            def _missing_prev_lines() -> list[str]:
+                hdr = format_session_header_lines(
+                    label=label, sdir=sdir, sandbox_mode=sandbox_override
+                )
+                lines = [*hdr, "", f"Missing: {prev_label}"]
+                if first_missing_label != prev_label:
+                    lines.append(f"Next: {first_missing_label}")
+                return lines
+
+            choice = prompt_yes_no_box(
+                "MISSING PREVIOUS STEP",
+                _missing_prev_lines(),
+                f"Renumber to {first_missing_label}?",
+                default_yes=False,
+                no_status=f"✗ Canceled {label} (run {prev_label} first).",
+                renumber_label=first_missing_label,
+                renumber_status=f"✓ Renumbering {label} -> {first_missing_label}.",
+                content_builder=_missing_prev_lines,
+                renumber_only=True,
+                label=label,
+                sdir=sdir,
+                sandbox_mode=sandbox_override,
+            )
+            if choice == "renumber":
+                renumbered_from = label
+                payload = _rewrite_script_step_header(payload, label, first_missing_label)
+                step = str(first_missing_num)
+                step_num = first_missing_num
+                label = first_missing_label
+                step_dir = _step_dir(sdir, step)
+                script_path = _find_step_script(sdir, step)
+                out_path = step_dir / "out"
+                aborted_marker = step_dir / "aborted"
+                overwrite = aborted_marker.exists()
+                if overwrite:
+                    out_path.unlink(missing_ok=True)
+                    (step_dir / "meta.json").unlink(missing_ok=True)
+                    aborted_marker.unlink(missing_ok=True)
+                    for orig_p in (step_dir / "block.orig.sh", step_dir / "out.orig"):
+                        orig_p.unlink(missing_ok=True)
+            else:
+                return 2
+        if renumbered_from is None:
+            return not_run_exit(
+                label,
+                sdir,
+                step,
+                out_path,
+                f"[{label}] NOT RUN: previous step {prev_label} has not been run yet",
+                headless=headless,
+            )
+    if not payload.strip():
+        return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: empty script on stdin", headless=headless)
+
+    protocol_notes, recorded_violations = format_protocol_reminder_lines(
+        label,
+        reply_transport=reply_transport or "text",
+        protocol_violations=merged_violations,
+    )
+    step_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _persist_step_reasoning(step_dir, reasoning)
+    write_private(script_path, payload, overwrite=overwrite)
+    return run_script(
+        label,
+        script_path,
+        out_path,
+        auto_yes=auto_yes,
+        sandbox_override=sandbox_override,
+        renumbered_from=renumbered_from,
+        reasoning=reasoning,
+        protocol_notes=protocol_notes,
+        reply_transport=reply_transport,
+        protocol_violations=recorded_violations,
+    )
+
+
+def cmd_retry(
+    ref: str | None = None, auto_yes: bool = False, sandbox_override: str | None = None
+) -> int:
+    if in_run_block():
+        target = f"--retry {ref}" if ref else "--retry"
+        return _reject_nested_step_execution(target)
+    if ref and "/" not in ref:
+        session, step = _find_latest_step(ref)
+    elif ref:
+        session, step = parse_ref(ref, allow_fix_step=True)
+    else:
+        session, step = _find_latest_step()
+    sdir = ensure_base() / session
+    step_dir = _step_dir(sdir, step)
+    script_path = _find_step_script(sdir, step)
+    out_path = step_dir / "out"
+    if not script_path.is_file():
+        raise SystemExit(f"{prog_name()}: block {session}/{step} not found ({script_path})")
+    rc_done = _guard_completed_session(
+        f"{session}/{step}",
+        sdir,
+        step,
+        out_path,
+        os.environ.get("RUN_BLOCK_HEADLESS") == "1",
+        auto_yes=auto_yes,
+    )
+    if rc_done is not None:
+        return rc_done
+    out_path.unlink(missing_ok=True)
+    (step_dir / "out.orig").unlink(missing_ok=True)
+    (step_dir / "meta.json").unlink(missing_ok=True)
+    (step_dir / "error").unlink(missing_ok=True)
+    (step_dir / "aborted").unlink(missing_ok=True)
+    return run_script(
+        f"{session}/{step}",
+        script_path,
+        out_path,
+        auto_yes=auto_yes,
+        sandbox_override=sandbox_override,
+    )
+
+
 TRAILING_FENCE_RE = re.compile(r"(?:\r?\n)+(?:RUN_(?:BLOCK|FIX)\s*)?`{3,}\s*$")
 SPLIT_HEADER_RE = re.compile(
     r"^\s*(?:`{3,}[A-Za-z0-9_-]*\s*)?(?:[A-Za-z0-9_./-]+\s+)?run(?:_block)?\b[^\n]*<<-?\s*['\"]?(RUN_(?:BLOCK|FIX))['\"]?\s*$"
@@ -11391,7 +11318,7 @@ def extract_reply_block(
                                 if m_next and _parse_reply_cmd_tokens(m_next.group(1), m_next.group(2)) is not None:
                                     next_hdr_idx = j
                                     break
-                        close_fence_before_next: list[int] = []
+                        first_close_fence: int | None = None
                         inner_hd_scan: str | None = None
                         for j in range(body_start, next_hdr_idx):
                             st_j = lines[j].strip()
@@ -11409,21 +11336,16 @@ def extract_reply_block(
                                     continue
                             is_cf_j, _, _ = _match_closing_fence_line(lines[j])
                             if is_cf_j:
-                                close_fence_before_next.append(j)
-                        if close_fence_before_next:
-                            # Prefer the first closing fence after body_start when it has glued prose
-                            first_cf = close_fence_before_next[0]
-                            _, first_cf_glued, first_cf_tail = _match_closing_fence_line(lines[first_cf])
+                                first_close_fence = j
+                                break
+                        if first_close_fence is not None:
+                            # Stop at the first closing fence outside inner heredocs so fenced
+                            # examples in trailing prose are never swallowed into the payload
+                            end_idx = first_close_fence
+                            _, first_cf_glued, first_cf_tail = _match_closing_fence_line(lines[end_idx])
                             if first_cf_glued:
-                                end_idx = first_cf
                                 glued_fence = True
                                 glued_tail = first_cf_tail
-                            else:
-                                end_idx = close_fence_before_next[-1]
-                                _, last_cf_glued, last_cf_tail = _match_closing_fence_line(lines[end_idx])
-                                if last_cf_glued:
-                                    glued_fence = True
-                                    glued_tail = last_cf_tail
                         elif next_hdr_idx < n_lines:
                             end_idx = next_hdr_idx
                             while end_idx > body_start and FENCE_OPEN_RE.match(lines[end_idx - 1]):
@@ -11532,20 +11454,16 @@ def extract_reply_block(
             "error": "no executable 'run <session>/<step> <<\'RUN_BLOCK\'' or '--fix' block found in reply",
         }
 
-    # Deduplicate consecutive identical blocks while tracking count and references
+    # Deduplicate consecutive identical blocks, remembering which unique block each duplicate repeats
     unique_candidates: list[dict[str, object]] = []
-    duplicate_count = 0
-    duplicate_refs: list[str] = []
+    duplicates: list[tuple[int, dict[str, object]]] = []
     for cand in non_empty:
         c_key = (cand.get("kind"), cand.get("ref"), str(cand.get("payload") or "").strip())
         if unique_candidates:
             prev = unique_candidates[-1]
             p_key = (prev.get("kind"), prev.get("ref"), str(prev.get("payload") or "").strip())
             if c_key == p_key:
-                duplicate_count += 1
-                d_ref = cand.get("ref") or cand.get("session")
-                if isinstance(d_ref, str) and d_ref:
-                    duplicate_refs.append(d_ref)
+                duplicates.append((len(unique_candidates) - 1, cand))
                 continue
         unique_candidates.append(cand)
 
@@ -11581,13 +11499,16 @@ def extract_reply_block(
     chosen = unique_candidates[chosen_idx]
     trailing_cands = unique_candidates[chosen_idx + 1 :]
     ignored_trailing_blocks = len(trailing_cands)
+    # Duplicates of the chosen or later blocks are discarded trailing blocks;
+    # duplicated templates before the chosen block are not
+    post_dups = [d for u, d in duplicates if u >= chosen_idx]
+    duplicate_count = len(post_dups)
+    discarded = sorted(trailing_cands + post_dups, key=lambda c: int(c["start_line"]))
     ignored_trailing_refs: list[str] = []
-    for tc in trailing_cands:
+    for tc in discarded:
         t_ref = tc.get("ref") or tc.get("session")
         if isinstance(t_ref, str) and t_ref:
             ignored_trailing_refs.append(t_ref)
-    if not ignored_trailing_refs and duplicate_refs:
-        ignored_trailing_refs = list(duplicate_refs)
 
     if chosen_idx > 0:
         first_start = int(unique_candidates[0]["start_line"])
@@ -11934,396 +11855,410 @@ def cmd_run_reply(
     )
 
 
+_CMP_OP_SYMBOLS: dict[type[ast.cmpop], str] = {
+    ast.Eq: "==",
+    ast.NotEq: "!=",
+    ast.Lt: "<",
+    ast.LtE: "<=",
+    ast.Gt: ">",
+    ast.GtE: ">=",
+    ast.Is: "is",
+    ast.IsNot: "is not",
+    ast.In: "in",
+    ast.NotIn: "not in",
+}
 
-def _done_badge(sdir: Path) -> str:
-    return " [DONE]" if is_session_completed(sdir) else ""
+
+def _short_repr(val: object, limit: int = 80) -> str:
+    r = repr(val)
+    if len(r) > limit:
+        return r[: limit - 3] + "..."
+    return r
 
 
-def _parse_iso_utc(ts: object) -> float | None:
-    if not isinstance(ts, str) or not ts.strip():
-        return None
-    raw = ts.strip()
+def _is_text_expr(node: ast.AST) -> bool:
+    return isinstance(node, ast.Name) and node.id == "text"
+
+
+def _fix_anchor_values(fix_code: str, ns: dict[str, object]) -> list[str]:
+    """Evaluate anchor expressions in text.count/replace/find/index, `old in text`, and re.sub/subn/search/findall."""
     try:
-        if raw.endswith("Z"):
-            raw = raw[:-1] + "+00:00"
-        return datetime.fromisoformat(raw).timestamp()
-    except ValueError:
+        tree = ast.parse(fix_code)
+    except SyntaxError:
+        return []
+    found: list[str] = []
+
+    def _eval_and_add(arg_node: ast.expr) -> None:
+        try:
+            expr = ast.Expression(body=arg_node)
+            ast.fix_missing_locations(expr)
+            val = eval(compile(expr, "<fix_anchor>", "eval"), ns)
+        except Exception:
+            return
+        if isinstance(val, str) and val and val not in found:
+            found.append(val)
+
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+        ):
+            obj_id = node.func.value.id
+            attr = node.func.attr
+            if obj_id == "text" and attr in ("count", "replace", "find", "index") and node.args:
+                _eval_and_add(node.args[0])
+            elif obj_id == "re" and attr in ("sub", "subn") and len(node.args) >= 3 and _is_text_expr(node.args[2]):
+                _eval_and_add(node.args[0])
+            elif obj_id == "re" and attr in ("search", "findall", "match") and len(node.args) >= 2 and _is_text_expr(node.args[1]):
+                _eval_and_add(node.args[0])
+        elif isinstance(node, ast.Compare):
+            left = node.left
+            for op, comp in zip(node.ops, node.comparators):
+                if isinstance(op, (ast.In, ast.NotIn)) and _is_text_expr(comp):
+                    _eval_and_add(left)
+                left = comp
+    return found
+
+
+def _closest_anchor(old: str, text: str) -> tuple[float, int, float, str] | None:
+    """Return (score, 1-based line, runner-up score, window) of the best line window."""
+    old_lines = old.strip("\n").splitlines() or [old]
+    lines = text.splitlines()
+    size = len(old_lines)
+    if not lines or len(lines) > 20000:
         return None
+    target = "\n".join(old_lines)
+    scores = []
+    for i in range(max(1, len(lines) - size + 1)):
+        window = "\n".join(lines[i : i + size])
+        scores.append((difflib.SequenceMatcher(None, target, window).ratio(), i + 1))
+    scores.sort(key=lambda s: (-s[0], s[1]))
+    best_score, best_line = scores[0]
+    runner_up = scores[1][0] if len(scores) > 1 else 0.0
+    window = "\n".join(lines[best_line - 1 : best_line - 1 + size])
+    return best_score, best_line, runner_up, window
 
 
-def _session_stats_lines(meta: dict[str, object]) -> list[str]:
-    stats = _session_stats(meta)
-    total = stat_int(stats, "steps")
-    outcomes = [
-        f"{count} {label}"
-        for key, label in (("ok", "ok"), ("failed", "failed"))
-        if (count := stat_int(stats, key)) > 0
-    ]
-    modifiers = [
-        f"{count} {label}"
-        for key, label in (("fix", "fix"), ("renumbered", "renumbered"))
-        if (count := stat_int(stats, key)) > 0
-    ]
-    groups = [", ".join(g) for g in (outcomes, modifiers) if g]
-    steps_line = f"Steps: {total} ({' · '.join(groups)})" if groups else f"Steps: {total}"
-
-    exec_dur = format_duration(stat_int(stats, "duration_ms") / 1000.0)
-    started_at = stats.get("started_at")
-    completed_at = meta.get("completed_at") or stats.get("completed_at")
-    start_ts = _parse_iso_utc(started_at)
-    end_ts = _parse_iso_utc(completed_at)
-    if start_ts is not None and end_ts is not None and end_ts > start_ts:
-        wall_dur = format_duration(end_ts - start_ts)
-        dur_line = f"Duration: {wall_dur} ({exec_dur} exec)"
-    else:
-        dur_line = f"Duration: {exec_dur}"
-
-    lines = [steps_line, dur_line]
-    if started_at:
-        lines.append(f"Started: {started_at}")
-    if completed_at:
-        lines.append(f"Completed: {completed_at}")
-    if meta.get("completed_note"):
-        lines.append(f"Note: {meta['completed_note']}")
-    return lines
+REPAIR_MIN_SCORE = 0.85
+REPAIR_MIN_MARGIN = 0.05
 
 
-def render_end_session_card(sdir: Path, *, headless: bool = False) -> None:
-    name = sdir.name
-    meta = read_session_meta(sdir)
-    hdr = format_session_header_lines(label=name, sdir=sdir)
-    lines = [*hdr, "", *_session_stats_lines(meta)]
-    if headless:
-        body = [
-            ln
-            for ln in lines
-            if ln.strip() and not re.match(r"^Session:\s+", ln)
-        ]
-        sys.stdout.write(f"[{name}] END SESSION\n" + "".join(f"{ln}\n" for ln in body))
-    else:
-        sys.stdout.write(format_info_box("END SESSION", lines) + "\n")
-    sys.stdout.flush()
+def _replace_anchor_literal_in_fix(fix_code: str, old: str, new_old: str) -> str | None:
+    """Replace string literal(s) evaluating to `old` in `fix_code` regardless of quote style."""
+    try:
+        tree = ast.parse(fix_code)
+    except SyntaxError:
+        return None
+    lines_keep = fix_code.splitlines(keepends=True)
+    line_starts: list[int] = [0]
+    for ln in lines_keep:
+        line_starts.append(line_starts[-1] + len(ln))
+
+    def _pos_to_index(lineno: int, col_offset: int) -> int | None:
+        if not (1 <= lineno <= len(lines_keep)):
+            return None
+        raw_line = lines_keep[lineno - 1]
+        raw_bytes = raw_line.encode("utf-8")
+        if not (0 <= col_offset <= len(raw_bytes)):
+            return None
+        try:
+            char_col = len(raw_bytes[:col_offset].decode("utf-8"))
+        except UnicodeDecodeError:
+            return None
+        return line_starts[lineno - 1] + char_col
+
+    spans: list[tuple[int, int]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value == old:
+            end_ln = getattr(node, "end_lineno", None)
+            end_col = getattr(node, "end_col_offset", None)
+            if node.lineno is None or node.col_offset is None or end_ln is None or end_col is None:
+                continue
+            s_idx = _pos_to_index(node.lineno, node.col_offset)
+            e_idx = _pos_to_index(end_ln, end_col)
+            if s_idx is not None and e_idx is not None and s_idx < e_idx:
+                spans.append((s_idx, e_idx))
+
+    if spans:
+        spans = sorted(set(spans))
+        for prev_sp, next_sp in zip(spans, spans[1:]):
+            if prev_sp[1] > next_sp[0]:
+                return None
+        patched = fix_code
+        replacement = repr(new_old)
+        for s_idx, e_idx in reversed(spans):
+            patched = patched[:s_idx] + replacement + patched[e_idx:]
+        return patched
+
+    if fix_code.count(repr(old)) == 1:
+        return fix_code.replace(repr(old), repr(new_old), 1)
+    return None
 
 
-def cmd_done(session: str | None = None, note: str | None = None, auto_yes: bool = False) -> int:
-    headless = auto_yes or os.environ.get("RUN_BLOCK_HEADLESS") == "1"
-    base = ensure_base()
-    if session:
-        sdir = base / session
-        if not sdir.is_dir():
-            raise SystemExit(f"{prog_name()}: session {session!r} not found in {base}")
-    else:
-        parent_ref = parent_run_block_ref()
-        if parent_ref is not None and (base / parent_ref[0]).is_dir():
-            sdir = base / parent_ref[0]
-        else:
-            found = _find_latest_session_dir()
-            if found is None:
-                raise SystemExit(f"{prog_name()}: no sessions found in {base}")
-            sdir = found
-    name = sdir.name
-    if is_session_completed(sdir):
-        when = read_session_meta(sdir).get("completed_at") or "unknown time"
-        sys.stdout.write(f"{prog_name()}: session {name} is already marked as completed ({when})\n")
-        return 0
-    set_session_completed(sdir, note=note)
-    if in_run_block() and append_deferred_card("end_session", session=name):
-        sys.stdout.write(f"{prog_name()}: session {name} marked completed\n")
-        sys.stdout.flush()
-        return 0
-    render_end_session_card(sdir, headless=headless)
-    return 0
-
-
-def _guard_completed_session(
+def _propose_anchor_repair(
+    fix_code: str,
+    text: str,
+    ns: dict[str, object],
     label: str,
     sdir: Path,
-    step_name: str,
-    out_path: Path,
-    headless: bool,
-    fix_target: str | None = None,
-    auto_yes: bool = False,
-) -> int | None:
-    if not is_session_completed(sdir):
-        return None
-    session = sdir.name
-    if auto_yes or headless:
-        clear_session_completed(sdir)
-        return None
-    rc = 2
-    reason = f"session {session} is marked as completed (pass -y/--yes to reopen and run)"
-    if sys.stdout.isatty():
-        meta = read_session_meta(sdir)
-        def _completed_lines() -> list[str]:
-            hdr = format_session_header_lines(label=label, sdir=sdir)
-            comp_lines = [f"Completed: {meta.get('completed_at') or 'unknown'}"]
-            if meta.get("completed_note"):
-                comp_lines.append(f"Note: {meta['completed_note']}")
-            return [*hdr, "", *comp_lines]
-
-        choice = prompt_yes_no_box(
-            "SESSION COMPLETED",
-            _completed_lines(),
-            f"-> Reopen session {session}?",
-            default_yes=False,
-            yes_status="✓ Session reopened.",
-            no_status="✗ Session stays completed.",
-            content_builder=_completed_lines,
-            label=label,
-            sdir=sdir,
-        )
-        if choice is True:
-            clear_session_completed(sdir)
-            return None
-        rc = 130
-        reason = f"session {session} is marked as completed (not reopened)"
-    step_dir = _step_dir(sdir, step_name)
-    existed = step_dir.exists()
-    rc_out = not_run_exit(
-        label, sdir, step_name, out_path, f"[{label}] NOT RUN: {reason}", rc=rc, headless=headless, fix_target=fix_target
-    )
-    if not existed:
-        shutil.rmtree(step_dir, ignore_errors=True)
-    return rc_out
-
-
-def _reject_nested_step_execution(action: str) -> int:
-    prog = prog_name()
-    parent_ref = parent_run_block_ref()
-    where = f" (active step: {parent_ref[0]}/{parent_ref[1]})" if parent_ref else ""
-    sys.stderr.write(
-        f"{prog}: cannot run {action} from inside a running block{where}\n"
-    )
-    sys.stderr.flush()
-    return 2
-
-
-def _merge_protocol_violation_dicts(
-    primary: dict[str, object] | None,
-    secondary: dict[str, object] | None,
-) -> dict[str, object] | None:
-    if not primary and not secondary:
-        return None
-    p = dict(primary or {})
-    s = dict(secondary or {})
-    merged: dict[str, object] = {
-        "ignored_trailing_blocks": int(p.get("ignored_trailing_blocks") or 0)
-        + int(s.get("ignored_trailing_blocks") or 0),
-        "ignored_trailing_refs": list(p.get("ignored_trailing_refs") or [])
-        + list(s.get("ignored_trailing_refs") or []),
-        "duplicate_count": int(p.get("duplicate_count") or 0) + int(s.get("duplicate_count") or 0),
-        "glued_fence": bool(p.get("glued_fence") or s.get("glued_fence")),
-        "trailing_prose": "\n".join(
-            t for t in (
-                str(p.get("trailing_prose") or "").strip(),
-                str(s.get("trailing_prose") or "").strip(),
-            ) if t
-        ),
-        "repaired": bool(p.get("repaired") or s.get("repaired")),
-        "had_wrapper": bool(p.get("had_wrapper") or s.get("had_wrapper")),
-        "wrapped_tool_script": bool(p.get("wrapped_tool_script") or s.get("wrapped_tool_script")),
-    }
-    return merged
-
-
-def cmd_normal(
-    ref: str,
-    payload: str,
-    auto_yes: bool = False,
-    sandbox_override: str | None = None,
     *,
-    reasoning: str | None = None,
-    renumbered_from: str | None = None,
-    reply_transport: str | None = None,
-    protocol_violations: dict[str, object] | None = None,
-) -> int:
-    if in_run_block():
-        return _reject_nested_step_execution(f"block {ref}")
-    payload, split_err, split_meta = _reassemble_split_payload_with_meta(payload)
-    merged_violations = _merge_protocol_violation_dicts(protocol_violations, split_meta)
-    headless = os.environ.get("RUN_BLOCK_HEADLESS") == "1"
-    session, step = parse_ref(ref, allow_fix_step=False)
-    step_num = int(step)
-    if step_num < 1:
-        raise SystemExit(f"{prog_name()}: step number must be >= 1")
-    base = ensure_base()
-    _warn_if_state_oversized(base)
-    sdir = base / session
-    sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    ensure_session_bundle(sdir, sandbox_mode=sandbox_override)
-    label = f"{session}/{step}"
-    step_dir = _step_dir(sdir, step)
-    script_path = _find_step_script(sdir, step)
-    out_path = step_dir / "out"
-    if split_err:
-        return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: {split_err}", headless=headless)
-    rc_done = _guard_completed_session(label, sdir, step, out_path, headless, auto_yes=auto_yes)
-    if rc_done is not None:
-        return rc_done
-
-    aborted_marker = step_dir / "aborted"
-
-    overwrite = aborted_marker.exists()
-    if overwrite:
-        out_path.unlink(missing_ok=True)
-        (step_dir / "meta.json").unlink(missing_ok=True)
-        aborted_marker.unlink(missing_ok=True)
-        for orig_p in (step_dir / "block.orig.sh", step_dir / "out.orig"):
-            orig_p.unlink(missing_ok=True)
-    elif script_path.exists() or out_path.exists():
-        if sys.stdout.isatty() and not no_clipboard() and not headless:
-            next_num = next_free_step(sdir, min_step=step_num + 1)
-            next_label = f"{session}/{next_num}"
-            existing_lines = [f"Next: {next_label}"]
-            if script_path.exists():
-                existing_lines.append(f"Script: {script_path}")
-            if out_path.exists():
-                existing_lines.append(f"Output: {out_path}")
-            def _step_exists_lines() -> list[str]:
-                hdr = format_session_header_lines(
-                    label=label, sdir=sdir, sandbox_mode=sandbox_override
-                )
-                return [*hdr, "", *existing_lines]
-
-            if out_path.exists():
-                choice = prompt_yes_no_box(
-                    "STEP ALREADY EXISTS",
-                    _step_exists_lines(),
-                    "Copy out to clipboard?",
-                    default_yes=True,
-                    no_status=f"✗ Keeping existing {label}.",
-                    script_path=script_path if script_path.exists() else None,
-                    out_path=out_path,
-                    renumber_label=next_label,
-                    renumber_status=f"✓ Renumbering {label} -> {next_label}.",
-                    content_builder=_step_exists_lines,
-                    copy_on_yes=True,
-                    label=label,
-                    sdir=sdir,
-                    sandbox_mode=sandbox_override,
-                    allow_overwrite=True,
-                )
-            else:
-                choice = prompt_yes_no_box(
-                    "STEP ALREADY EXISTS",
-                    _step_exists_lines(),
-                    f"Renumber to {next_label}?",
-                    default_yes=False,
-                    no_status=f"✗ Keeping existing {label}.",
-                    script_path=script_path if script_path.exists() else None,
-                    renumber_label=next_label,
-                    renumber_status=f"✓ Renumbering {label} -> {next_label}.",
-                    content_builder=_step_exists_lines,
-                    renumber_only=True,
-                    label=label,
-                    sdir=sdir,
-                    sandbox_mode=sandbox_override,
-                    allow_overwrite=True,
-                )
-            if choice == "renumber":
-                renumbered_from = label
-                payload = _rewrite_script_step_header(payload, label, next_label)
-                step = str(next_num)
-                step_num = next_num
-                label = next_label
-                step_dir = _step_dir(sdir, step)
-                script_path = _find_step_script(sdir, step)
-                out_path = step_dir / "out"
-                aborted_marker = step_dir / "aborted"
-                overwrite = False
-            elif choice == "overwrite":
-                out_path.unlink(missing_ok=True)
-                (step_dir / "meta.json").unlink(missing_ok=True)
-                (step_dir / "error").unlink(missing_ok=True)
-                aborted_marker.unlink(missing_ok=True)
-                for orig_p in (step_dir / "block.orig.sh", step_dir / "out.orig"):
-                    orig_p.unlink(missing_ok=True)
-                overwrite = True
-            elif choice == "copy":
-                return 0
-            else:
-                return 2
-        if not overwrite and renumbered_from is None:
-            return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: step already exists — output: {out_path}", headless=headless)
-    if step_num > 1 and renumbered_from is None and not _find_step_script(sdir, str(step_num - 1)).exists():
-        prev_label = f"{session}/{step_num - 1}"
-        if sys.stdout.isatty() and not no_clipboard() and not headless:
-            first_missing_num = first_missing_step(sdir)
-            first_missing_label = f"{session}/{first_missing_num}"
-            def _missing_prev_lines() -> list[str]:
-                hdr = format_session_header_lines(
-                    label=label, sdir=sdir, sandbox_mode=sandbox_override
-                )
-                lines = [*hdr, "", f"Missing: {prev_label}"]
-                if first_missing_label != prev_label:
-                    lines.append(f"Next: {first_missing_label}")
-                return lines
-
-            choice = prompt_yes_no_box(
-                "MISSING PREVIOUS STEP",
-                _missing_prev_lines(),
-                f"Renumber to {first_missing_label}?",
-                default_yes=False,
-                no_status=f"✗ Canceled {label} (run {prev_label} first).",
-                renumber_label=first_missing_label,
-                renumber_status=f"✓ Renumbering {label} -> {first_missing_label}.",
-                content_builder=_missing_prev_lines,
-                renumber_only=True,
-                label=label,
-                sdir=sdir,
-                sandbox_mode=sandbox_override,
-            )
-            if choice == "renumber":
-                renumbered_from = label
-                payload = _rewrite_script_step_header(payload, label, first_missing_label)
-                step = str(first_missing_num)
-                step_num = first_missing_num
-                label = first_missing_label
-                step_dir = _step_dir(sdir, step)
-                script_path = _find_step_script(sdir, step)
-                out_path = step_dir / "out"
-                aborted_marker = step_dir / "aborted"
-                overwrite = aborted_marker.exists()
-                if overwrite:
-                    out_path.unlink(missing_ok=True)
-                    (step_dir / "meta.json").unlink(missing_ok=True)
-                    aborted_marker.unlink(missing_ok=True)
-                    for orig_p in (step_dir / "block.orig.sh", step_dir / "out.orig"):
-                        orig_p.unlink(missing_ok=True)
-            else:
-                return 2
-        if renumbered_from is None:
-            return not_run_exit(
-                label,
-                sdir,
-                step,
-                out_path,
-                f"[{label}] NOT RUN: previous step {prev_label} has not been run yet",
-                headless=headless,
-            )
-    if not payload.strip():
-        return not_run_exit(label, sdir, step, out_path, f"[{label}] NOT RUN: empty script on stdin", headless=headless)
-
-    protocol_notes, recorded_violations = format_protocol_reminder_lines(
-        label,
-        reply_transport=reply_transport or "text",
-        protocol_violations=merged_violations,
+    out_path: Path | None = None,
+    fix_path: Path | None = None,
+) -> tuple[str | None, bool]:
+    """Offer to swap a single missing anchor for its unambiguous closest match; return (new_fix_code, prompted)."""
+    missing = [v for v in _fix_anchor_values(fix_code, ns) if text.count(v) == 0]
+    if len(missing) != 1:
+        return None, False
+    old = missing[0]
+    close = _closest_anchor(old, text)
+    if close is None:
+        return None, False
+    score, line_no, runner_up, window = close
+    if score < REPAIR_MIN_SCORE or score - runner_up < REPAIR_MIN_MARGIN:
+        return None, False
+    new_old = window + ("\n" if old.endswith("\n") else "")
+    if new_old == old:
+        return None, False
+    patched = _replace_anchor_literal_in_fix(fix_code, old, new_old)
+    if patched is None or patched == fix_code:
+        return None, False
+    lines = [
+        f"Anchor not found; closest match at line {line_no} (similarity {score:.2f}):",
+        f"- {old.strip()}",
+        f"+ {window.strip()}",
+    ]
+    if out_path is not None:
+        lines.append(f"Output: {out_path}")
+    choice = prompt_yes_no_box(
+        "NOT RUN",
+        lines,
+        "Replace anchor with closest match?",
+        default_yes=False,
+        script_path=fix_path,
+        out_path=out_path,
+        label=label,
+        sdir=sdir,
     )
-    step_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    _persist_step_reasoning(step_dir, reasoning)
-    write_private(script_path, payload, overwrite=overwrite)
-    return run_script(
-        label,
-        script_path,
-        out_path,
-        auto_yes=auto_yes,
-        sandbox_override=sandbox_override,
-        renumbered_from=renumbered_from,
-        reasoning=reasoning,
-        protocol_notes=protocol_notes,
-        reply_transport=reply_transport,
-        protocol_violations=recorded_violations,
-    )
+    if choice is not True:
+        return None, True
+    return patched, True
+
+
+def _anchor_in_referenced_file(old: str, script_text: str, work_dir: Path | None) -> str | None:
+    """Return a file path named in the script that contains the anchor text, if any."""
+    if work_dir is None:
+        return None
+    for token in dict.fromkeys(re.findall(r"[\w./-]+\.\w+", script_text)):
+        cand = work_dir / token
+        try:
+            if cand.is_file() and cand.stat().st_size < 2_000_000 and old in cand.read_text(encoding="utf-8"):
+                return token
+        except (OSError, UnicodeDecodeError):
+            continue
+    return None
+
+
+def _fix_anchor_hints(
+    fix_code: str, text: str, ns: dict[str, object], next_seq_ref: str, work_dir: Path | None = None
+) -> list[str]:
+    """Concrete `Hint:` lines for common --fix authoring mistakes."""
+    hints: list[str] = []
+    for old in _fix_anchor_values(fix_code, ns):
+        count = text.count(old)
+        if count == 1:
+            continue
+        if count > 1:
+            hints.append(
+                f"Hint: anchor {_short_repr(old, 40)} matches {count} times; "
+                "extend it with surrounding lines so it is unique"
+            )
+            continue
+        stripped = old.rstrip("\n")
+        if stripped != old and text.count(stripped) == 1:
+            hints.append("Hint: anchor matches once without its trailing newline; drop the trailing newline from old")
+            continue
+        repo_file = _anchor_in_referenced_file(old, text, work_dir)
+        if repo_file:
+            hints.append(
+                f"Hint: anchor is not in the target script but exists in {repo_file}; "
+                f"--fix patches only the script, so emit a fresh {next_seq_ref} block that edits that file"
+            )
+            continue
+        close = _closest_anchor(old, text)
+        if close is not None and close[0] >= 0.5:
+            hints.append(
+                f"Hint: closest match at line {close[1]} (similarity {close[0]:.2f}): "
+                f"{_short_repr(close[3].strip(), 60)}"
+            )
+        else:
+            hints.append(
+                f"Hint: anchor {_short_repr(old, 40)} not found in the target script; "
+                f"if the text lives elsewhere, emit a fresh {next_seq_ref} block instead of --fix"
+            )
+    try:
+        tree = ast.parse(fix_code)
+    except SyntaxError:
+        return hints
+    for node in tree.body:
+        if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)):
+            continue
+        func = node.value.func
+        if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+            continue
+        name = f"{func.value.id}.{func.attr}"
+        if name in ("text.replace", "re.sub", "re.subn"):
+            hints.append(f"Hint: line {node.lineno}: result of {name}(...) is discarded; assign it back with text = ...")
+    return hints
+
+
+_SHELL_START_RE = re.compile(
+    r"^(?:#!|set\s+-|cd(?:\s|$)|git(?:\s|$)|python3?(?:\s|$)|echo(?:\s|$)|cat(?:\s|$)|grep(?:\s|$)"
+    r"|awk(?:\s|$)|sed(?:\s|$)|ls\b|pwd\b|todo(?:_md)?\b|run(?:_block)?\b"
+    r"|export\s|mkdir\s|rm\s|cp\s|mv\s|chmod\s|find\s|sh(?:\s|$)|bash(?:\s|$)|pytest\b|make\b)"
+)
+
+
+def _looks_like_shell_script(fix_code: str) -> bool:
+    nonblank = [ln.strip() for ln in fix_code.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    first = next((ln.strip() for ln in fix_code.splitlines() if ln.strip()), "")
+    if _SHELL_START_RE.match(first) or (nonblank and _SHELL_START_RE.match(nonblank[0])) or "<<'" in fix_code:
+        if "text" not in fix_code:
+            return True
+        if not any(tok in fix_code for tok in ("text.", "text =", "text=", "in text", ", text")):
+            return True
+    return False
+
+
+def _fix_syntax_context(fix_code: str) -> list[str]:
+    """Code snippet (+-2 lines) and escaping hint for a --fix payload that fails to parse."""
+    try:
+        ast.parse(fix_code)
+    except SyntaxError as exc:
+        lineno, msg = exc.lineno, exc.msg or ""
+    else:
+        return []
+    lines = fix_code.splitlines()
+    out: list[str] = []
+    if lineno is not None and 1 <= lineno <= len(lines):
+        out.append(f"Context (line {lineno}):")
+        for n in range(max(1, lineno - 2), min(len(lines), lineno + 2) + 1):
+            mark = ">" if n == lineno else " "
+            out.append(f"{mark} {n:>3} | {lines[n - 1]}")
+    if any(k in msg for k in ("unterminated", "continuation", "unicode", "unexpected character", "EOF")):
+        out.append(
+            "Hint: the RUN_FIX heredoc passes text literally; write newlines as \\n inside Python "
+            "string literals and build triple backticks via chr(96) * 3"
+        )
+    return out
+
+
+def _format_fix_exception(
+    exc: BaseException, fix_code: str, fix_path: Path, ns: dict[str, object]
+) -> str:
+    lineno: int | None = getattr(exc, "lineno", None)
+    tb = exc.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code.co_filename == str(fix_path):
+            lineno = tb.tb_lineno
+        tb = tb.tb_next
+
+    lines = fix_code.splitlines()
+    stmt_node: ast.stmt | None = None
+    if lineno is not None:
+        try:
+            tree = ast.parse(fix_code)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.stmt) and hasattr(node, "lineno"):
+                    end_ln = getattr(node, "end_lineno", node.lineno) or node.lineno
+                    if node.lineno <= lineno <= end_ln:
+                        if stmt_node is None or node.lineno >= stmt_node.lineno:
+                            stmt_node = node
+        except Exception:
+            stmt_node = None
+
+    stmt_str = ""
+    if stmt_node is not None:
+        seg = ast.get_source_segment(fix_code, stmt_node)
+        if seg:
+            stmt_str = " ".join(l.strip() for l in seg.splitlines() if l.strip())
+    if not stmt_str and lineno is not None and 1 <= lineno <= len(lines):
+        stmt_str = lines[lineno - 1].strip()
+
+    actual_part = ""
+    if (
+        isinstance(exc, AssertionError)
+        and isinstance(stmt_node, ast.Assert)
+        and isinstance(stmt_node.test, ast.Compare)
+        and len(stmt_node.test.ops) == 1
+        and len(stmt_node.test.comparators) == 1
+    ):
+        op_sym = _CMP_OP_SYMBOLS.get(type(stmt_node.test.ops[0]))
+        if op_sym:
+            try:
+                left_expr = ast.Expression(body=stmt_node.test.left)
+                right_expr = ast.Expression(body=stmt_node.test.comparators[0])
+                ast.fix_missing_locations(left_expr)
+                ast.fix_missing_locations(right_expr)
+                left_val = eval(compile(left_expr, "<fix_eval>", "eval"), ns)
+                right_val = eval(compile(right_expr, "<fix_eval>", "eval"), ns)
+                actual_part = f" (actual: {_short_repr(left_val)} {op_sym} {_short_repr(right_val)})"
+            except Exception:
+                actual_part = ""
+
+    exc_name = type(exc).__name__
+    exc_msg = str(exc).strip()
+    if lineno is not None and stmt_str:
+        loc_str = f"at line {lineno}: {stmt_str}{actual_part}"
+        if exc_msg:
+            return f"fix raised {exc_name}: {exc_msg} ({loc_str})"
+        return f"fix raised {exc_name} {loc_str}"
+    if exc_msg:
+        return f"fix raised {exc_name}: {exc_msg}"
+    return f"fix raised {exc_name}"
+
+
+def _find_fix_chain_scripts(sdir: Path, base_step: str) -> list[tuple[str, Path]]:
+    chain: list[tuple[str, Path]] = []
+    base_script = _find_step_script(sdir, base_step)
+    if base_script.is_file():
+        chain.append((base_step, base_script))
+    if sdir.is_dir():
+        fix_items: list[tuple[int, str, Path]] = []
+        pat = re.compile(rf"^{re.escape(base_step)}_(\d+)$")
+        for d in sdir.iterdir():
+            m = pat.match(d.name)
+            if m and d.is_dir():
+                sub_idx = int(m.group(1))
+                step_name = f"{base_step}_{sub_idx}"
+                sp = _find_step_script(sdir, step_name)
+                if sp.is_file():
+                    fix_items.append((sub_idx, step_name, sp))
+        for _, step_name, p in sorted(fix_items, key=lambda x: x[0]):
+            chain.append((step_name, p))
+    return chain
+
+
+def _consecutive_failed_fixes(sdir: Path, base_step: str) -> int:
+    if not sdir.is_dir():
+        return 0
+    indices: set[int] = set()
+    pat = re.compile(rf"^{re.escape(base_step)}_(\d+)$")
+    for d in sdir.iterdir():
+        m = pat.match(d.name)
+        if m and d.is_dir():
+            indices.add(int(m.group(1)))
+    failures = 0
+    for idx in sorted(indices):
+        stem = f"{base_step}_{idx}"
+        outcome = _step_outcome(sdir, stem)["outcome"]
+        if outcome == "aborted":
+            continue
+        if outcome == "ok":
+            failures = 0
+        else:
+            failures += 1
+    return failures
 
 
 def cmd_fix(
@@ -12658,6 +12593,106 @@ def cmd_fix(
         reply_transport=reply_transport,
         protocol_violations=recorded_violations,
     )
+
+
+def _done_badge(sdir: Path) -> str:
+    return " [DONE]" if is_session_completed(sdir) else ""
+
+
+def _parse_iso_utc(ts: object) -> float | None:
+    if not isinstance(ts, str) or not ts.strip():
+        return None
+    raw = ts.strip()
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        return datetime.fromisoformat(raw).timestamp()
+    except ValueError:
+        return None
+
+
+def _session_stats_lines(meta: dict[str, object]) -> list[str]:
+    stats = _session_stats(meta)
+    total = stat_int(stats, "steps")
+    outcomes = [
+        f"{count} {label}"
+        for key, label in (("ok", "ok"), ("failed", "failed"))
+        if (count := stat_int(stats, key)) > 0
+    ]
+    modifiers = [
+        f"{count} {label}"
+        for key, label in (("fix", "fix"), ("renumbered", "renumbered"))
+        if (count := stat_int(stats, key)) > 0
+    ]
+    groups = [", ".join(g) for g in (outcomes, modifiers) if g]
+    steps_line = f"Steps: {total} ({' · '.join(groups)})" if groups else f"Steps: {total}"
+
+    exec_dur = format_duration(stat_int(stats, "duration_ms") / 1000.0)
+    started_at = stats.get("started_at")
+    completed_at = meta.get("completed_at") or stats.get("completed_at")
+    start_ts = _parse_iso_utc(started_at)
+    end_ts = _parse_iso_utc(completed_at)
+    if start_ts is not None and end_ts is not None and end_ts > start_ts:
+        wall_dur = format_duration(end_ts - start_ts)
+        dur_line = f"Duration: {wall_dur} ({exec_dur} exec)"
+    else:
+        dur_line = f"Duration: {exec_dur}"
+
+    lines = [steps_line, dur_line]
+    if started_at:
+        lines.append(f"Started: {started_at}")
+    if completed_at:
+        lines.append(f"Completed: {completed_at}")
+    if meta.get("completed_note"):
+        lines.append(f"Note: {meta['completed_note']}")
+    return lines
+
+
+def render_end_session_card(sdir: Path, *, headless: bool = False) -> None:
+    name = sdir.name
+    meta = read_session_meta(sdir)
+    hdr = format_session_header_lines(label=name, sdir=sdir)
+    lines = [*hdr, "", *_session_stats_lines(meta)]
+    if headless:
+        body = [
+            ln
+            for ln in lines
+            if ln.strip() and not re.match(r"^Session:\s+", ln)
+        ]
+        sys.stdout.write(f"[{name}] END SESSION\n" + "".join(f"{ln}\n" for ln in body))
+    else:
+        sys.stdout.write(format_info_box("END SESSION", lines) + "\n")
+    sys.stdout.flush()
+
+
+def cmd_done(session: str | None = None, note: str | None = None, auto_yes: bool = False) -> int:
+    headless = auto_yes or os.environ.get("RUN_BLOCK_HEADLESS") == "1"
+    base = ensure_base()
+    if session:
+        sdir = base / session
+        if not sdir.is_dir():
+            raise SystemExit(f"{prog_name()}: session {session!r} not found in {base}")
+    else:
+        parent_ref = parent_run_block_ref()
+        if parent_ref is not None and (base / parent_ref[0]).is_dir():
+            sdir = base / parent_ref[0]
+        else:
+            found = _find_latest_session_dir()
+            if found is None:
+                raise SystemExit(f"{prog_name()}: no sessions found in {base}")
+            sdir = found
+    name = sdir.name
+    if is_session_completed(sdir):
+        when = read_session_meta(sdir).get("completed_at") or "unknown time"
+        sys.stdout.write(f"{prog_name()}: session {name} is already marked as completed ({when})\n")
+        return 0
+    set_session_completed(sdir, note=note)
+    if in_run_block() and append_deferred_card("end_session", session=name):
+        sys.stdout.write(f"{prog_name()}: session {name} marked completed\n")
+        sys.stdout.flush()
+        return 0
+    render_end_session_card(sdir, headless=headless)
+    return 0
 
 
 def _step_sort_key(stem: str) -> tuple[int, int]:
@@ -12999,48 +13034,6 @@ def cmd_show(ref: str | None = None, part: int | None = None, only: str | None =
         sys.stdout.write(f"\n=== [{session}/{step}] Error: {err_path} ===\n")
         sys.stdout.write(err_path.read_text(encoding="utf-8", errors="replace"))
     return 0
-
-
-def cmd_retry(
-    ref: str | None = None, auto_yes: bool = False, sandbox_override: str | None = None
-) -> int:
-    if in_run_block():
-        target = f"--retry {ref}" if ref else "--retry"
-        return _reject_nested_step_execution(target)
-    if ref and "/" not in ref:
-        session, step = _find_latest_step(ref)
-    elif ref:
-        session, step = parse_ref(ref, allow_fix_step=True)
-    else:
-        session, step = _find_latest_step()
-    sdir = ensure_base() / session
-    step_dir = _step_dir(sdir, step)
-    script_path = _find_step_script(sdir, step)
-    out_path = step_dir / "out"
-    if not script_path.is_file():
-        raise SystemExit(f"{prog_name()}: block {session}/{step} not found ({script_path})")
-    rc_done = _guard_completed_session(
-        f"{session}/{step}",
-        sdir,
-        step,
-        out_path,
-        os.environ.get("RUN_BLOCK_HEADLESS") == "1",
-        auto_yes=auto_yes,
-    )
-    if rc_done is not None:
-        return rc_done
-    out_path.unlink(missing_ok=True)
-    (step_dir / "out.orig").unlink(missing_ok=True)
-    (step_dir / "meta.json").unlink(missing_ok=True)
-    (step_dir / "error").unlink(missing_ok=True)
-    (step_dir / "aborted").unlink(missing_ok=True)
-    return run_script(
-        f"{session}/{step}",
-        script_path,
-        out_path,
-        auto_yes=auto_yes,
-        sandbox_override=sandbox_override,
-    )
 
 
 def _find_latest_session_dir() -> Path | None:

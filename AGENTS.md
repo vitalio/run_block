@@ -69,8 +69,8 @@ rules are loaded via `.context.bundle`.
   and inline `a(ppend)` / `o(verwrite)` conflict resolution when a step number
   already exists or skips a previous step, `prompt_yes_no_box()`,
   `offer_clipboard_copy()`).
-- `src/runner.py` (and `src/reply.py`, `src/fix.py`, `src/inspect_cmd.py` split
-  in `F93`) — sequential session/step execution (`<session>/<step>`,
+- `src/runner.py`, `src/reply.py`, `src/fix.py`, `src/inspect_cmd.py` —
+  sequential session/step execution (`<session>/<step>`,
   `run_script()`, `cmd_normal()`, `cmd_retry()`), `-y`/`--yes` auto-confirm mode,
   and `--headless` (`RUN_BLOCK_HEADLESS=1`) headless mode in `src/runner.py`;
   `-r`/`--run [-c|--clipboard] [session]` (`run -rc`) full-reply ingestion with
@@ -138,7 +138,7 @@ rules are loaded via `.context.bundle`.
   `No`), clearing the completed flag only when confirmed (or when `-y`/`--yes`
   is explicitly passed).
 - Session lifecycle states and step outcome labels (`src/session_meta.py`,
-  `src/runner.py`):
+  `src/inspect_cmd.py`):
   - Session lifecycle state (`get_session_state(sdir)`): `done` when
     `<session>/meta.json` has `"completed": true`; `active` when not completed
     and at least one step directory (`_iter_session_steps(sdir)`) exists;
@@ -184,7 +184,8 @@ rules are loaded via `.context.bundle`.
   `_run_in_process`, `_run_subprocess`, `_assert_ok`) and `RUN_BLOCK_*`
   environment isolation.
 - `tests/test_cli.py`, `tests/test_safety.py`, `tests/test_ui.py`,
-  `tests/test_bundle.py`, `tests/test_runner.py`, `tests/test_agent.py` —
+  `tests/test_bundle.py`, `tests/test_runner.py`, `tests/test_reply.py`,
+  `tests/test_fix.py`, `tests/test_inspect_cmd.py`, `tests/test_agent.py` —
   modular offline unit test suites mirroring `src/` boundaries.
 
 ## Bundle Input Protocol

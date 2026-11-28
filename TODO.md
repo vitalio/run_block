@@ -29,19 +29,6 @@
   - In the interactive `START SESSION` `i(nfo)` fullscreen viewer (`src/ui_info.py`), bind hotkey `o` (`o(rder): model/tree` in the footer bar) to toggle live between the source-chain tree and the model-delivery order table while keeping `Tab: parts` and `Enter: open part` navigation working seamlessly in both modes.
 - Add unit tests in `tests/test_bundle.py` and `tests/test_ui.py` covering `--bundle-plan --order`, `[system]`/`[user]` grouping metrics, and interactive `o` mode toggling in `START SESSION` info.
 
-# 🎯 [NEXT] F93: Split src/runner.py into src/reply.py, src/fix.py, src/inspect_cmd.py, and src/runner.py
-
-- Depends on: F94, B15, B16, D11, F101, F104, F108, F107
-- Split `src/runner.py` (~4,100 lines) along the single-responsibility module boundaries decided in `D11`:
-  - `src/reply.py`: model reply block extraction and split-payload reassembly (`extract_reply_block()`, `_reassemble_split_payload_with_meta()`, `normalize_api_tool_script()`, `format_protocol_reminder_lines()`, `_detect_output_prompt_injection_warning()`, `cmd_run_reply()`).
-  - `src/fix.py`: Python `--fix` AST anchor inspection, repair hints, syntax context, consecutive failure tracking, and `cmd_fix()`.
-  - `src/inspect_cmd.py`: session and step inspection/lifecycle commands (`cmd_list()`, `cmd_show()`, `cmd_clean()`, `cmd_sandbox()`, `cmd_done()`, `render_end_session_card()`, `_step_status()`, `_warn_if_state_oversized()`).
-  - `src/runner.py`: core step execution engine (`_ProgressLineFilter`, `_prepare_progress_script()`, `_validate_step_script_syntax()`, `_resolve_python_stdin_tracebacks()`, `run_script()`, `not_run_exit()`, `cmd_normal()`, `cmd_retry()`).
-- Tighten `extract_reply_block()` edge cases during the `src/reply.py` split:
-  - When a `RUN_BLOCK`/`RUN_FIX` terminator is omitted and the block closes with a plain Markdown fence followed by trailing prose that itself contains another fenced code block, stop at the first closing fence outside inner heredocs rather than swallowing the trailing fenced example via `close_fence_before_next[-1]`.
-  - Track post-chosen duplicate block references alongside distinct trailing blocks so `ignored_trailing_refs` and `total_discarded_blocks` in `format_protocol_reminder_lines()` stay consistent when both a duplicate block and another trailing block appear after the chosen block (and exclude pre-chosen template duplicates when `chosen_idx > 0`).
-- Register `src/reply.py`, `src/fix.py`, and `src/inspect_cmd.py` in `build.py` `MODULE_ORDER`, rebuild `./run` via `python3 build.py`, and keep the offline test suite green.
-
 # 🎯 [NEXT] F109: Redesign START/END STEP cards, multi-section fullscreen info, editor prompts, and in-TUI history navigation
 
 - Depends on: F93
@@ -114,9 +101,27 @@
   - Display provider token usage, cache hit percentage, and remaining Anthropic cache TTL in `Stats:` across `END STEP` and `END SESSION` while keeping fast offline `count_tokens()` estimation for pre-flight cards.
   - Document `--profile` / `-P`, `--continue`, `--autopilot`, `--step`, `config.json` / `models.json`, and `RUN_BLOCK_MODEL*` / `RUN_BLOCK_CACHE` in `src/header.py` (`--help`), `agents/run.md`, and `README.md`, and add unit tests in `tests/test_ui.py` and `tests/test_cli.py`.
 
+# ⚪ [NEW] F111: Move TestConfigSettings from tests/test_runner.py into tests/test_config.py
+
+Problem: `TestConfigSettings` (settings precedence, profiles, API key scrubbing, `_clean_out_text`) lives in `tests/test_runner.py` although it exercises `src/config.py` and `src/safety.py`.
+Impact: breaks the mirrored test layout; config regressions surface under the runner suite.
+
 # ⏸️ [HOLD] D9: Design machine-readable runner contract (--json step output and plan/execute handshake) — *Defer external machine-readable runner contract until an external client is needed; built-in API agent mode (D10) runs in-process*
 
 - Depends on: F79, F83, F88
 - Design contract to let an external API/TUI/IDE client drive `run` cleanly without parsing TUI frames or overloading `-y`/`--yes`.
 - Align with `F83` step outcome metadata in `<session>/<step>/meta.json` (`outcome`: `ok`/`failed`/`syntax-error`/`not-run`/`aborted`/`saved`, `exit_code`, `duration_ms`, `reason`, `fix_target`) and `D10`/`F88` in-process step structures to evaluate structured `--json` execution output for `<session>/<step>` (including safety findings, auto-repair/renumber notes, and clean `[sN/k]` LLM payload) and a two-phase `plan -> approve -> execute` CLI handshake for external clients.
 - Coordinate with `F42` (`--done` completion state) and `F46` (`bundle_plan` metadata).
+
+# 🔎 [REVIEW] F93: Split src/runner.py into src/reply.py, src/fix.py, src/inspect_cmd.py, and src/runner.py
+
+- Depends on: F94, B15, B16, D11, F101, F104, F108, F107
+- Split `src/runner.py` (~4,100 lines) along the single-responsibility module boundaries decided in `D11`:
+  - `src/reply.py`: model reply block extraction and split-payload reassembly (`extract_reply_block()`, `_reassemble_split_payload_with_meta()`, `normalize_api_tool_script()`, `format_protocol_reminder_lines()`, `_detect_output_prompt_injection_warning()`, `cmd_run_reply()`).
+  - `src/fix.py`: Python `--fix` AST anchor inspection, repair hints, syntax context, consecutive failure tracking, and `cmd_fix()`.
+  - `src/inspect_cmd.py`: session and step inspection/lifecycle commands (`cmd_list()`, `cmd_show()`, `cmd_clean()`, `cmd_sandbox()`, `cmd_done()`, `render_end_session_card()`, `_step_status()`, `_warn_if_state_oversized()`).
+  - `src/runner.py`: core step execution engine (`_ProgressLineFilter`, `_prepare_progress_script()`, `_validate_step_script_syntax()`, `_resolve_python_stdin_tracebacks()`, `run_script()`, `not_run_exit()`, `cmd_normal()`, `cmd_retry()`).
+- Tighten `extract_reply_block()` edge cases during the `src/reply.py` split:
+  - When a `RUN_BLOCK`/`RUN_FIX` terminator is omitted and the block closes with a plain Markdown fence followed by trailing prose that itself contains another fenced code block, stop at the first closing fence outside inner heredocs rather than swallowing the trailing fenced example via `close_fence_before_next[-1]`.
+  - Track post-chosen duplicate block references alongside distinct trailing blocks so `ignored_trailing_refs` and `total_discarded_blocks` in `format_protocol_reminder_lines()` stay consistent when both a duplicate block and another trailing block appear after the chosen block (and exclude pre-chosen template duplicates when `chosen_idx > 0`).
+- Register `src/reply.py`, `src/fix.py`, and `src/inspect_cmd.py` in `build.py` `MODULE_ORDER`, rebuild `./run` via `python3 build.py`, and keep the offline test suite green.
