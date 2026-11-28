@@ -1665,27 +1665,25 @@ class TestBundle(RunBlockTestCase):
                     check=False,
                 )
 
-            r_stdin = run("--bundle-plan", "--part", "2", stdin=stdin_text)
-            self.assertEqual((r_stdin.returncode, r_stdin.stdout), (0, task_txt), r_stdin.stderr)
-            self.assertIn("part 2/2", r_stdin.stderr)
-            self.assertIn("(lines 5-5)", r_stdin.stderr)
-
             r_start = run("--start", "--session", "s1", stdin=stdin_text)
             self.assertEqual(r_start.returncode, 0, r_start.stderr)
             plan_json = json.loads(run("--bundle-plan", "s1", "--json").stdout)
             idx = {p.get("name"): p["index"] for p in plan_json["parts"]}
-            for argv in (("--bundle-plan", "s1"), ("--show", "s1"), ("--show", "s1/0")):
+            for argv in (("--show", "s1"), ("--show", "s1/0")):
                 with self.subTest(argv=argv):
                     r = run(*argv, "--part", str(idx["p1"]))
                     self.assertEqual((r.returncode, r.stdout), (0, task_txt), r.stderr)
+                    self.assertIn(f"part {idx['p1']}/", r.stderr)
             r_latest = run("--show", "--part", str(idx["r1"]))
-            self.assertEqual((r_latest.returncode, r_latest.stdout), (0, rule_txt), r_latest.stderr)
+            self.assertEqual((r_latest.returncode, r_latest.stdout), (0, rule_txt), r.stderr)
 
             for argv in (
-                ("--bundle-plan", "s1", "--part", "99"),
-                ("--bundle-plan", "s1", "--part", "0"),
-                ("--show", "s1/1", "--part", "1"),
+                ("--bundle-plan", "--part", "1"),
+                ("--bundle-plan", "s1", "--part", "1"),
                 ("--bundle-plan", "s1", "--part", "1", "--json"),
+                ("--show", "s1", "--part", "99"),
+                ("--show", "s1", "--part", "0"),
+                ("--show", "s1/1", "--part", "1"),
                 ("--show", "s1", "--part", "x"),
             ):
                 with self.subTest(argv=argv):
@@ -1954,7 +1952,7 @@ class TestBundle(RunBlockTestCase):
                     buf5 = io.StringIO()
                     with contextlib.redirect_stdout(buf5):
                         rc5 = self.mod.main([
-                            "--start", "-p", "After cmd", "--session", "s3", "--force", "--no-sandbox",
+                            "--start", "-p", "After cmd", "--session", "s3", "--force", "--sandbox", "off",
                         ])
                     self.assertEqual(rc5, 0)
                     b_s3_f = (sessions / "s3" / "0").read_text(encoding="utf-8")
@@ -1988,7 +1986,7 @@ class TestBundle(RunBlockTestCase):
                     ["--sandbox", "s1", "-p", "no"],
                     ["--sandbox", "strict", "s1", "-p", "no"],
                     ["--update", "-p", "no"],
-                    ["--check-update", "-p", "no"],
+                    ["--update", "--check", "-p", "no"],
                 ]
                 for bad_cmd in incompatible_cases:
                     with self.subTest(bad_cmd=bad_cmd):
@@ -2154,7 +2152,7 @@ class TestBundle(RunBlockTestCase):
         self.assertEqual(pct_end_1 - pct_end_0, 2)
         self.assertEqual(pct_end_2 - pct_end_1, 2)
 
-    def test_nested_cmd_start_defers_card_and_links_parent_child_meta(self):
+    def test_nested_cmd_start_rejected_inside_running_block(self):
         # Initialize parent session s1 and create active step directory s1/1
         self._assert_ok(self._run(["--start", "--session", "s1"], input="Task: F79\n\nparent body\n"))
         parent_sdir = self.tmp / "s1"
@@ -2167,29 +2165,22 @@ class TestBundle(RunBlockTestCase):
             "RUN_BLOCK_PARENT_SESSION": "s1",
             "RUN_BLOCK_PARENT_STEP": "1",
         }
-        r_child = self._run(
-            [],
-            input="Task: F80\nTitle: Child task\n\nchild prompt body\n",
-            env=nested_env,
-        )
-        self._assert_ok(r_child)
-        # Inside the active step, stdout is only the single plain diagnostic line (no START SESSION box)
-        self.assertEqual(r_child.stdout, "run: initialized session s2 (s2/0)\n")
-        self.assertNotIn("START SESSION", r_child.stdout)
+        for argv in ([], ["--start", "--session", "s2"]):
+            with self.subTest(argv=argv):
+                r_child = self._run(
+                    argv,
+                    input="Task: F80\nTitle: Child task\n\nchild prompt body\n",
+                    env=nested_env,
+                )
+                self.assertEqual(r_child.returncode, 2, msg=r_child.stderr)
+                self.assertIn("cannot start a new session from inside a running block", r_child.stderr)
+                self.assertEqual(r_child.stdout, "")
 
-        child_sdir = self.tmp / "s2"
-        self.assertTrue((child_sdir / "0").is_file())
-        child_meta = self.mod.read_session_meta(child_sdir)
-        self.assertEqual(child_meta.get("parent_session"), "s1")
-        self.assertEqual(child_meta.get("parent_step"), "1")
-
-        parent_meta = self.mod.read_session_meta(parent_sdir)
-        self.assertEqual(parent_meta.get("spawned_sessions"), ["s2"])
-
-        cards = self.mod.pop_deferred_cards(parent_step_dir)
-        self.assertEqual(cards, [{"kind": "start_session", "session": "s2"}])
-        # Second pop returns empty after deferred.json was consumed
+        self.assertFalse((self.tmp / "s2").exists())
         self.assertEqual(self.mod.pop_deferred_cards(parent_step_dir), [])
+        self.assertFalse(hasattr(self.mod, "record_parent_child_session"))
+        for key in ("parent_session", "parent_step", "spawned_sessions"):
+            self.assertNotIn(key, self.mod._SESSION_STATE_KEYS)
 
     def test_bundle_raw_markup_preservation_on_edit_and_sandbox_off_omission(self):
         nonce = "bnd_edit_raw"

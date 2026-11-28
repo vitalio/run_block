@@ -724,20 +724,14 @@ class TestRunner(RunBlockTestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(self.mod.cmd_normal("s1/1", "echo first_step\n"), 0)
             self.assertEqual(self.mod.cmd_normal("s1/2", "echo second_step\n"), 0)
-        r_info = self._run(["--info", "s1"])
-        self._assert_ok(r_info)
+        r_show = self._run(["--show", "s1"])
+        self._assert_ok(r_show)
         for needle in (
             "Session: s1", f"Path: {self.tmp / 's1'}", "State: active", "Next: s1/3",
             "Task: F20", "Role: work", "s1/0", "s1/1", "s1/2",
         ):
             with self.subTest(needle=needle):
-                self.assertIn(needle, r_info.stdout)
-        r_latest = self._run(["--info"])
-        self._assert_ok(r_latest)
-        self.assertEqual(r_latest.stdout, r_info.stdout)
-        r_show = self._run(["--show", "s1"])
-        self._assert_ok(r_show)
-        self.assertEqual(r_show.stdout, r_info.stdout)
+                self.assertIn(needle, r_show.stdout)
 
         r_script = self._run(["--show", "s1/2", "--script"])
         self._assert_ok(r_script)
@@ -752,7 +746,8 @@ class TestRunner(RunBlockTestCase):
         self._assert_ok(r_sess_out)
         self.assertIn("second_step", r_sess_out.stdout)
         for argv in (["--show", "s1/0", "--script"], ["--show", "s1/2", "--script", "--out"],
-                     ["--show", "s1/2", "--out", "--part", "1"], ["--info", "s1", "s2"]):
+                     ["--show", "s1/2", "--out", "--part", "1"], ["--show", "s1", "s2"],
+                     ["--info"], ["--info", "s1"]):
             with self.subTest(argv=argv):
                 self.assertNotEqual(self._run(argv).returncode, 0)
 
@@ -1325,10 +1320,9 @@ class TestRunner(RunBlockTestCase):
         self.assertIn("alpha", out_p3.read_text(encoding="utf-8"))
         self.assertEqual(list(step3_dir.glob(".progress_*")), [])
 
-        # 6. Help and README document RUN_BLOCK_PROGRESS
-        r_help = self._run([str(SCRIPT), "-h"], capture_output=True, text=True, check=False)
-        self.assertEqual(r_help.returncode, 0, r_help.stderr)
-        self.assertIn("RUN_BLOCK_PROGRESS", r_help.stdout)
+        r_cfg = self._run([str(SCRIPT), "--config"], capture_output=True, text=True, check=False)
+        self.assertEqual(r_cfg.returncode, 0)
+        self.assertIn("progress", r_cfg.stdout)
         self.assertIn("RUN_BLOCK_PROGRESS", (ROOT / "README.md").read_text(encoding="utf-8"))
 
     def test_merged_stderr_capture_and_error_line(self):
@@ -1882,17 +1876,12 @@ class TestRunner(RunBlockTestCase):
         self.assertNotIn("(edited)", tty_out)
         mock_copy.assert_called_once_with(["pbcopy"], f)
 
-    def test_deferred_end_session_and_start_session_ordering_and_clipboard_handoff(self):
+    def test_deferred_end_session_ordering_and_in_step_start_session_rejection(self):
         # 1. Start session s1
         self._assert_ok(self._run(["--start", "--session", "s1"], input="Task: F79\n\ninitial session\n"))
 
-        # Run a step in s1 that marks s1 done AND pipes a new bundle to start s2.
-        # Use non-headless mode with mocked offer_clipboard_copy so we verify card ordering
-        # and clipboard handoff.
-        script_body = (
-            f'"{sys.executable}" "{SCRIPT}" --done -m "finished F79"\n'
-            f'printf "Task: F80\\nTitle: Next task\\n\\nnext body\\n" | "{sys.executable}" "{SCRIPT}"\n'
-        )
+        # Run a step in s1 that marks s1 done.
+        script_body = f'"{sys.executable}" "{SCRIPT}" --done -m "finished F79"\n'
         offer_calls: list[tuple[str, Path, str]] = []
 
         def stub_offer(label, target_path, **kwargs):
@@ -1908,42 +1897,40 @@ class TestRunner(RunBlockTestCase):
         full_stdout = out_buf.getvalue()
         step_out = (self.tmp / "s1" / "1" / "out").read_text(encoding="utf-8")
 
-        # Step out log contains only the single-line diagnostics, NOT the TUI boxes
+        # Step out log contains only the single-line diagnostic, NOT the TUI box
         self.assertIn("run: session s1 marked completed\n", step_out)
-        self.assertIn("run: initialized session s2 (s2/0)\n", step_out)
         self.assertNotIn("╭─ END SESSION", step_out)
-        self.assertNotIn("╭─ START SESSION", step_out)
 
-        # In outer stdout, [s1/1] END / END STEP comes first, then END SESSION, then START SESSION
+        # In outer stdout, END STEP comes first, then END SESSION
         idx_end_step = full_stdout.index("╭─ END STEP ")
         idx_end_sess = full_stdout.index("╭─ END SESSION ")
-        idx_start_sess = full_stdout.index("╭─ START SESSION ")
         self.assertLess(idx_end_step, idx_end_sess)
-        self.assertLess(idx_end_sess, idx_start_sess)
 
         # Deferred END SESSION re-reads s1/meta.json AFTER update_session_stats(),
         # so the completing step s1/1 itself is counted (Steps: 1 (1 ok))
-        end_sess_section = full_stdout[idx_end_sess:idx_start_sess]
+        end_sess_section = full_stdout[idx_end_sess:]
         self.assertRegex(end_sess_section, r"Session:\s+s1")
         self.assertRegex(end_sess_section, r"Workdir:\s+")
         self.assertRegex(end_sess_section, r"Task:\s+F79")
         self.assertRegex(end_sess_section, r"Steps:\s+1 \(1 ok\)")
         self.assertRegex(end_sess_section, r"Note:\s+finished F79")
 
-        # Because a deferred start_session card was queued, offer_clipboard_copy was
-        # NOT called for outer END STEP (s1/1), and WAS called for the spawned s2/0 bundle!
         self.assertEqual(
             offer_calls,
-            [("s2/0", self.tmp / "s2" / "0", "START SESSION")],
+            [("s1/1", self.tmp / "s1" / "1" / "out", "END STEP")],
         )
-
-        # Parent and child meta.json linkage is persisted
         s1_meta = self.mod.read_session_meta(self.tmp / "s1")
-        s2_meta = self.mod.read_session_meta(self.tmp / "s2")
         self.assertTrue(s1_meta.get("completed"))
-        self.assertEqual(s1_meta.get("spawned_sessions"), ["s2"])
-        self.assertEqual(s2_meta.get("parent_session"), "s1")
-        self.assertEqual(s2_meta.get("parent_step"), "1")
+
+        # 2. Attempting to start a new session from inside a running step exits 2
+        self._assert_ok(self._run(["--start", "--session", "s2"], input="Task: F80\n\nbody\n"))
+        nested_start_script = f'printf "Task: F81\\n\\nnext body\\n" | "{sys.executable}" "{SCRIPT}"\n'
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc_nested = self.mod.cmd_normal("s2/1", nested_start_script, auto_yes=True)
+        self.assertEqual(rc_nested, 2)
+        s2_1_out = (self.tmp / "s2" / "1" / "out").read_text(encoding="utf-8")
+        self.assertIn("cannot start a new session from inside a running block", s2_1_out)
+        self.assertFalse((self.tmp / "s3").exists())
 
     def test_deferred_end_session_without_child_keeps_outer_end_step_clipboard(self):
         self._assert_ok(self._run(["--start", "--session", "s1"], input="Task: F79\n\nbody\n"))

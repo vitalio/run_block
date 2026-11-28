@@ -88,7 +88,7 @@ chaining `--fix <base>_1` allocates `<base>_2`, up to
 `RUN_BLOCK_MAX_FIX_ATTEMPTS`). When a fix requires rewriting
 multiple sections, emit a fresh `<session>/<step+1>` block instead.
 
-### 4. Complete or chain sessions (`--done`)
+### 4. Complete a session (`--done`)
 
 ```bash
 run --done s1 -m "Completed feature and tests"
@@ -97,10 +97,10 @@ run --done s1 -m "Completed feature and tests"
 `--done` persists completion metadata (`completed`, `completed_at`,
 `completed_note`) and accumulated step statistics in `<session>/meta.json` and
 renders the `END SESSION` summary card (`--list` marks completed sessions with
-`[DONE]`). Inside a running step (`IN_RUN_BLOCK=1`), `--done` and piped
-`<cmd> | run` session initialization queue deferred `END SESSION` ->
-`START SESSION` cards after the outer `END STEP` and hand off the clipboard to
-the newly spawned `<child>/0` bundle.
+`[DONE]`). Inside a running step (`IN_RUN_BLOCK=1`), `--done` queues a deferred
+`END SESSION` card after the outer `END STEP`, while nested session
+initialization (`--start` or piped bundles) and step execution are rejected
+with exit status `2`.
 
 ### 5. Persist settings and model profiles (`--config`, `-P`)
 
@@ -209,16 +209,17 @@ lowercase `[y/n/i(nfo)]:` and require an explicit `y` or `n`.
   characters without being duplicates, a `fragment_overlap` warning shows the
   earlier part, shared line count, and overlap percentage in `--bundle-plan`
   and `START SESSION`.
-- **Inspecting individual parts (`--bundle-plan` & `--part N`)**: Each part in
-  `bundle_plan` records 1-based `line_start` / `line_end` offsets into cleaned
-  `<session>/0`. Inspect the full table or slice a single 1-based part index `N`
-  (`stdout` receives the part text; `stderr` receives a one-line summary):
+- **Inspecting individual parts (`--bundle-plan` & `--show --part N`)**: Each
+  part in `bundle_plan` records 1-based `line_start` / `line_end` offsets into
+  cleaned `<session>/0`. Inspect the full table with `--bundle-plan` or slice a
+  single 1-based part index `N` with `--show --part N` (`stdout` receives the
+  part text; `stderr` receives a one-line summary):
 
 ```bash
 run --bundle-plan s1
 run --bundle-plan s1 --json
 run --show s1 --part 1
-run --bundle-plan s1 --part 2
+run --show s1/0 --part 2
 ```
 
 ## Safety Scanner, Sandboxing & Approval Hooks
@@ -285,21 +286,18 @@ run --bundle-plan s1 --part 2
 | `run [-y] [--headless] <session>/<step>` | Run a block from `stdin` (`-y`/`--yes` auto-confirms `START STEP` and reopens a completed session while keeping TUI cards; `--headless` disables TUI boxes and prompts) |
 | `run -r`, `--run [-c] [-y] [session]` | Ingest a full model reply from the system clipboard (`-c`/`--clipboard`, e.g. `run -rc`), `$VISUAL`/`$EDITOR` (on TTY `stdin`), or piped `stdin`, validate and repair the `RUN_BLOCK` / `RUN_FIX` block (or fenced code block when `[session]` is given) before allocating `<session>/<next_step>`, and display model reasoning in `START STEP` |
 | `run --plan` | Analyze script from `stdin` and print JSON execution and safety plan |
-| `run --bundle-plan [<session>] [--json] [--part N]` | Print the `Parts (<N>):` table and diagnostics from `stdin` or an existing session (`--part N` prints only that part's text) |
+| `run --bundle-plan [<session>] [--json]` | Print the `Parts (<N>):` table and diagnostics from `stdin` or an existing session |
 | `run --fix [-y] <session>/<target>` | Patch `<target>` script via Python on `stdin` and run as `<target>_N` |
 | `run --retry [-y] [session[/step]]` | Re-run a block, or the latest block of a session when only `<session>` is given (default: latest block overall) |
 | `run --list`, `-l [session \| --filter TEXT]` | List sessions with block count, size, UTC timestamp, `Workdir`/`Role`/`Task` headers, the last step outcome (`ok (<duration>)`, `exit <rc> (<duration>)`, `syntax-error (exit <rc>)`, `not-run`, `aborted`, `saved`) and `next: <session>/<step>` for open sessions (`[DONE]` marks completed sessions without `next:`); `--filter TEXT` keeps only sessions whose name or any header value contains `TEXT` (case-insensitive) |
 | `run --done [-y] [session] [-m NOTE]` | Mark a session (default: latest) as completed and print the `END SESSION` summary with accumulated statistics |
-| `run --info [session]` | Show session path, state, size, update time, statistics, all headers (including `Bundle-*` transport headers), and every block with its status and action summary (default: latest session); `--show <session>` is equivalent |
-| `run --show [session/step] [--script \| --out]` | Show saved script and output of a block, the `<session>/0` bundle, or the summary of a bare `<session>`; `--script` / `--out` print only the script or only the captured output (a bare `<session>` selects its latest block) |
+| `run --show [session[/step]] [--script \| --out]` | Show session path, state, size, update time, statistics, headers (including `Bundle-*` transport headers), and all blocks for a bare `<session>`, the `<session>/0` bundle, or saved script and output of `<session>/<step>`; `--script` / `--out` print only the script or only the captured output (a bare `<session>` selects its latest block) |
 | `run --show [<session>[/0]] --part N` | Print only part `N` (1-based part `index` from `--bundle-plan --json`) of `<session>/0` (latest session when omitted); exits non-zero for non-zero steps or out-of-range parts |
 | `run --sandbox [MODE] [session]` | Show or update session sandbox mode (`off`, `strict`, `nonet`) in `<session>/0` |
 | `run --clean [opts] [session...]` | Prune sessions (`--keep N`, `--older-than DAYS`, `--max-size MB`, `--all`, or named sessions) |
 | `run --start [-p TEXT] [--session NAME]` | Start session from `stdin` context bundle or rule-only on TTY into `<session>/0` |
-| `run --config [KEY[=VALUE]]` | Show effective settings with their sources, profiles, roles, and the active profile (secrets redacted); print one key, or set it in `config.json` (`0600`; `KEY=` unsets; rejected inside a running block) |
-| `run --config --edit`, `--path` | Open `config.json` in the configured editor (validated as a JSON object afterwards) or print its path |
-| `run --update [--force]` | Self-update `run` from GitHub (`vitalio/run-block`) |
-| `run --check-update` | Check GitHub for a newer version |
+| `run --config [KEY[=VALUE] \| --edit \| --path]` | Show effective settings with their sources, profiles, roles, and the active profile (secrets redacted); print one key, set it in `config.json` (`0600`; `KEY=` unsets; rejected inside a running block), open `config.json` in the configured editor (`--edit`), or print its path (`--path`) |
+| `run --update [--check \| --force]` | Self-update `run` from GitHub (`vitalio/run-block`) or check for a newer version (`--check`) |
 | `run --uninstall [--purge]` | Remove installed `run` / `run_block` binary (`--purge` also removes the state directory) |
 | `run -V`, `--version` | Print version and exit `0` |
 | `run -h`, `--help` | Print usage help and exit `0` |
@@ -315,7 +313,6 @@ run --bundle-plan s1 --part 2
 | `-p`, `--prompt TEXT` | Embed repeatable prompt text into the started session bundle (`===== Prompt =====`) |
 | `-P`, `--profile NAME` | Model profile (or `<provider>:<model>`) for the started session; overrides role routing and `default_profile` and is saved in `<session>/meta.json` |
 | `--sandbox [MODE]` | Set the sandbox mode for the run or started session (`off`, `strict`, `nonet`); bare flag means `strict` |
-| `--no-sandbox` | Same as `--sandbox off` |
 | `-V`, `--version` | Print version and exit `0` |
 | `-h`, `--help` | Print usage help and exit `0` |
 
@@ -401,7 +398,7 @@ variables override `.run-block.json` and `config.json` values:
 | `VISUAL` / `EDITOR` | `vim`/`less`/`nano` | Terminal editor/viewer for `e(dit)`/`s(cript)`/`o(utput)`/`v(iew)` inside `i(nfo)` |
 | `RUN_BLOCK_SAFETY_DISABLE` | *(none)* | Comma-separated built-in risk categories to disable |
 | `RUN_BLOCK_SAFETY_RULES` | *(none)* | Semicolon-separated `<cat>=<regex>` rules |
-| `RUN_BLOCK_UPDATE_URL` | GitHub `main/run` | Override remote script URL used by `--update` and `--check-update` |
+| `RUN_BLOCK_UPDATE_URL` | GitHub `main/run` | Override remote script URL used by `--update [--check]` |
 | `RUN_BLOCK_CONFIG` | `XDG_CONFIG_HOME/run-block/config.json` | User config file path (falls back to an existing `models.json`) |
 | `RUN_BLOCK_MODEL` | *(none)* | Model profile name (or `<provider>:<model>`) for all sessions |
 | `RUN_BLOCK_MODEL_<ROLE>` | *(none)* | Model profile for one role (`PLAN`, `DESIGN`, `WORK`, `REVIEW`, `LAW`) |

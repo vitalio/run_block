@@ -36,7 +36,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.41.0"
+VERSION = "0.42.0"
 REPO_MARKER = "run-block-repo: vitalio/run-block"
 LEGACY_REPO_MARKER = "run_block-repo: vitalio/run_block"
 REPO_MARKERS = (REPO_MARKER, LEGACY_REPO_MARKER)
@@ -50,31 +50,42 @@ HELP_USAGE = (
     "<command> | {prog} [options]",
 )
 
-HELP_COMMANDS = (
+HELP_SESSION_COMMANDS = (
     ("{prog}", "Start a rule-only session on TTY stdin (or read a bundle from piped stdin)"),
     ("<command> | {prog}", "Start a new session from a stdin context bundle into {base_dir}/<session>/0"),
-    ("{prog} [-y] <session>/<step>", "Run the block from stdin (-y/--yes: auto-confirm START STEP and reopen a completed session)"),
-    ("{prog} -r | --run [-c] [-y] [sess]", "Run full model reply from clipboard (-c), editor (TTY), or stdin with step inference"),
-    ("{prog} --plan", "Analyze the script from stdin and print the JSON execution and safety plan"),
-    ("{prog} --bundle-plan [sess]", "Print the Parts table and warnings of a bundle from stdin or session (--json, --part N)"),
-    ("{prog} --fix [-y] <session>/<ref>", "Patch <ref> script via Python on stdin and run as <ref>_N"),
-    ("{prog} --retry [-y] [session/step]", "Re-run the last block of a session or <session>/<step>"),
-    ("{prog} --list | -l [session]", "List sessions/blocks: last step, next free step ([DONE] = completed)"),
-    ("{prog} --list --filter TEXT", "List only sessions whose name or headers contain TEXT"),
-    ("{prog} --done [session] [-m NOTE]", "Mark session completed and print END SESSION summary (later blocks ask to reopen)"),
-    ("{prog} --show [session/step]", "Show script, output, and (edited) backup notes of a block or <session>/0"),
-    ("{prog} --show <session> --part N", "Print only part N of <session>/0 (1-based part index, see --bundle-plan --json)"),
-    ("{prog} --show <ref> --script|--out", "Print only a block's script or only its output"),
-    ("{prog} --info [session]", "Show path, size, headers, and all blocks of a session"),
-    ("{prog} --sandbox [MODE] [session]", "Show or set session sandbox mode (off, strict, nonet)"),
-    ("{prog} --clean [opts] [session...]", "Prune sessions in {base_dir} (--keep N, --older-than DAYS, --max-size MB, --all)"),
-    ("{prog} --start [opts]", "Start a session from stdin or rule-only on TTY (--session NAME, --force)"),
-    ("{prog} --config [KEY[=VALUE]]", "Show settings with sources, profiles, and roles; get a key or set it in config.json (KEY= unsets)"),
-    ("{prog} --config --edit|--path", "Open config.json in the configured editor or print its path"),
-    ("{prog} --update [--force]", "Self-update {prog} from GitHub (vitalio/run-block)"),
-    ("{prog} --check-update", "Check if a newer version is available"),
-    ("{prog} --uninstall [--purge]", "Remove installed {prog} binary (--purge also removes {base_dir})"),
+    ("--start [opts]", "Start a session from stdin or rule-only on TTY (--session NAME, --force)"),
+    ("[-y] <session>/<step>", "Run the block from stdin (-y/--yes: auto-confirm START STEP and reopen a completed session)"),
+    ("-r | --run [-c] [-y] [sess]", "Run full model reply from clipboard (-c), editor (TTY), or stdin with step inference"),
+    ("--fix [-y] <session>/<ref>", "Patch <ref> script via Python on stdin and run as <ref>_N"),
+    ("--retry [-y] [session/step]", "Re-run the last block of a session or <session>/<step>"),
+    ("--done [session] [-m NOTE]", "Mark session completed and print END SESSION summary (later blocks ask to reopen)"),
 )
+
+HELP_INSPECT_COMMANDS = (
+    ("--list | -l [session]", "List sessions/blocks: last step, next free step ([DONE] = completed)"),
+    ("--list --filter TEXT", "List only sessions whose name or headers contain TEXT"),
+    ("--show [session[/step]]", "Show session info (<session>), <session>/0 bundle, or block script, output, and backups"),
+    ("--show <session> --part N", "Print only part N of <session>/0 (1-based part index, see --bundle-plan --json)"),
+    ("--show <ref> --script|--out", "Print only a block's script or only its output"),
+    ("--bundle-plan [sess]", "Print the Parts table and warnings of a bundle from stdin or session (--json)"),
+    ("--plan", "Analyze the script from stdin and print the JSON execution and safety plan"),
+)
+
+HELP_CONFIG_COMMANDS = (
+    ("--config [KEY[=VALUE] | --edit | --path]", "Show settings with sources, profiles, and roles; get/set a key in config.json (KEY= unsets), open in editor (--edit), or print path (--path)"),
+    ("--sandbox [MODE] [session]", "Show or set session sandbox mode (off, strict, nonet)"),
+    ("--clean [opts] [session...]", "Prune sessions in {base_dir} (--keep N, --older-than DAYS, --max-size MB, --all)"),
+    ("--update [--check | --force]", "Self-update {prog} from GitHub (vitalio/run-block) or check for a newer version (--check)"),
+    ("--uninstall [--purge]", "Remove installed {prog} binary (--purge also removes {base_dir})"),
+)
+
+HELP_COMMAND_SECTIONS = (
+    ("Session & Execution Commands:", HELP_SESSION_COMMANDS),
+    ("Inspection & History Commands:", HELP_INSPECT_COMMANDS),
+    ("Configuration & Maintenance Commands:", HELP_CONFIG_COMMANDS),
+)
+
+HELP_COMMANDS = (*HELP_SESSION_COMMANDS, *HELP_INSPECT_COMMANDS, *HELP_CONFIG_COMMANDS)
 
 HELP_OPTIONS = (
     ("-r, --run [session]", "Full-reply mode: extract block & reasoning from clipboard (-c), editor (TTY), or piped stdin"),
@@ -84,7 +95,6 @@ HELP_OPTIONS = (
     ("-p, --prompt TEXT", "Embed repeatable prompt text into the started session bundle (===== Prompt =====)"),
     ("-P, --profile NAME", "Model profile for the started session (overrides role routing and default_profile; saved in meta.json)"),
     ("--sandbox [MODE]", "Set the sandbox mode for the run or started session (off, strict, nonet); bare flag means strict"),
-    ("--no-sandbox", "Same as --sandbox off"),
     ("-V, --version", "Print version and exit 0"),
     ("-h, --help", "Print this usage and exit 0"),
 )
@@ -95,9 +105,6 @@ HELP_ENV = (
     ("RUN_BLOCK_CACHE=auto|system|off", "Prompt cache breakpoint mode for API sessions"),
     ("RUN_BLOCK_CWD=auto|cwd|PATH", "Working directory (auto prefers piped/session Workdir, project root, or $PWD)"),
     ("RUN_BLOCK_PAGER=cat|inherit", "Non-interactive pager for child steps (PAGER, GIT_PAGER, GH_PAGER, MANPAGER, ...; inherit/off keeps parent env)"),
-    ("RUN_BLOCK_PROGRESS=0", "Disable live step progress markers during interactive runs"),
-    ("RUN_BLOCK_BUNDLE_MAX_TOKENS=100000", "Warn when total bundle exceeds token budget (0 disables)"),
-    ("RUN_BLOCK_FRAGMENT_MAX_TOKENS=20000", "Warn when a single bundle part exceeds token limit (0 disables)"),
     ("VISUAL / EDITOR", "Editor/viewer for e(dit), s(cript), o(utput), and v(iew) inside i(nfo) (keeps *.orig backups)"),
 )
 
@@ -728,7 +735,7 @@ def _help_section(title: str, rows: tuple, fmt: dict, col: int) -> list[str]:
 def usage_text() -> str:
     prog = prog_name()
     fmt = {"prog": prog, "base_dir": default_base_dir(prog, migrate=False)}
-    sections = (("Commands:", HELP_COMMANDS), ("Options:", HELP_OPTIONS), ("Environment:", HELP_ENV))
+    sections = (*HELP_COMMAND_SECTIONS, ("Options:", HELP_OPTIONS), ("Environment:", HELP_ENV))
     all_labels = [label.format(**fmt) for _, rows in sections for label, _ in rows]
     col = min(max(display_width(x) for x in all_labels) + 4, HELP_MAX_LABEL_COL)
     out = ["Usage:"] + ["  " + s.format(**fmt) for s in HELP_USAGE]
@@ -899,9 +906,6 @@ _SESSION_STATE_KEYS = (
     "completed_note",
     "stats",
     "usage",
-    "parent_session",
-    "parent_step",
-    "spawned_sessions",
     "profile",
 )
 _STAT_COUNTERS = ("steps", "ok", "failed", "fix", "renumbered", "duration_ms")
@@ -1287,32 +1291,6 @@ def pop_deferred_cards(step_dir: Path | None) -> list[dict[str, object]]:
         cards = []
     deferred_file.unlink(missing_ok=True)
     return cards
-
-
-def record_parent_child_session(child_sdir: Path) -> tuple[str, str] | None:
-    ref = parent_run_block_ref()
-    if ref is None:
-        return None
-    parent_sess, parent_step = ref
-    base = child_sdir.parent
-    parent_sdir = base / parent_sess
-    update_session_meta(
-        child_sdir,
-        parent_session=parent_sess,
-        parent_step=parent_step,
-    )
-    if parent_sdir.is_dir():
-        p_meta = read_session_meta(parent_sdir)
-        raw_spawned = p_meta.get("spawned_sessions")
-        spawned: list[str] = (
-            [str(x) for x in raw_spawned if isinstance(x, str)]
-            if isinstance(raw_spawned, list)
-            else []
-        )
-        if child_sdir.name not in spawned:
-            spawned.append(child_sdir.name)
-        update_session_meta(parent_sdir, spawned_sessions=spawned)
-    return parent_sess, parent_step
 
 
 # --- Detailed pre-execution block plan and safety scanner ---
@@ -9176,8 +9154,7 @@ def format_bundle_plan_text(plan: dict[str, object], *, session: str | None = No
 
 def cmd_bundle_plan(argv: list[str], stdin_text: str | None = None) -> int:
     prog = prog_name()
-    usage = f"{prog} --bundle-plan [<session>] [--json] [--part N]"
-    argv, part_no = parse_part_option(argv, usage)
+    usage = f"{prog} --bundle-plan [<session>] [--json]"
     as_json = False
     session_arg: str | None = None
     for a in argv:
@@ -9189,11 +9166,8 @@ def cmd_bundle_plan(argv: list[str], stdin_text: str | None = None) -> int:
             session_arg = a
         else:
             raise SystemExit(f"{prog}: usage: {usage}")
-    if part_no is not None and as_json:
-        raise SystemExit(f"{prog}: --part cannot be combined with --json")
 
     plan: dict[str, object] | None = None
-    plan_text: str | None = None
     if session_arg is not None:
         sess = session_arg.split("/", 1)[0] if session_arg.endswith("/0") else session_arg
         if not re.fullmatch(r"[A-Za-z0-9._-]+", sess):
@@ -9206,9 +9180,6 @@ def cmd_bundle_plan(argv: list[str], stdin_text: str | None = None) -> int:
         if plan is None:
             raise SystemExit(f"{prog}: no bundle data found for session {sess!r}")
         session_arg = sess
-        bundle_file = sdir / "0"
-        if bundle_file.is_file():
-            plan_text = bundle_file.read_text(encoding="utf-8", errors="replace")
     else:
         if stdin_text is None:
             if sys.stdin.isatty():
@@ -9220,20 +9191,7 @@ def cmd_bundle_plan(argv: list[str], stdin_text: str | None = None) -> int:
             stdin_text = sys.stdin.read()
         stdin_headers, raw_body = parse_stdin_preamble(stdin_text)
         boundary = get_bundle_boundary(stdin_headers)
-        plan_text, plan = parse_bundle_fragments(raw_body, boundary=boundary)
-
-    if part_no is not None:
-        target = f"{session_arg}/0" if session_arg is not None else "stdin"
-        if plan_text is None:
-            raise SystemExit(f"{prog}: bundle text for {target} not found")
-        try:
-            entry, chunk = extract_bundle_part(plan, plan_text, part_no)
-        except ValueError as exc:
-            raise SystemExit(f"{prog}: {target}: {exc}")
-        sys.stderr.write(format_part_header(target, entry, int(plan.get("part_count") or 0)))
-        sys.stdout.write(chunk)
-        sys.stdout.flush()
-        return 0
+        _, plan = parse_bundle_fragments(raw_body, boundary=boundary)
 
     if as_json:
         payload = dict(plan)
@@ -10674,8 +10632,6 @@ def run_script(
         pass
     deferred_cards = pop_deferred_cards(step_dir)
     end_session_cards = [c for c in deferred_cards if c.get("kind") == "end_session"]
-    start_session_cards = [c for c in deferred_cards if c.get("kind") == "start_session"]
-    has_deferred_start = bool(start_session_cards)
     clip_target = resolve_clipboard_target(out_path, full_output)
     if headless:
         if stdin_diag_lines:
@@ -10685,8 +10641,7 @@ def run_script(
         sys.stdout.write(end_line)
         sys.stdout.flush()
     elif (
-        has_deferred_start
-        or in_run_block()
+        in_run_block()
         or not sys.stdout.isatty()
         or clipboard_mode() != "prompt"
         or clipboard_command(clip_target) is None
@@ -10703,7 +10658,7 @@ def run_script(
         )
         sys.stdout.write("\n" + format_info_box("END STEP", end_body) + "\n")
         sys.stdout.flush()
-    if not headless and not has_deferred_start:
+    if not headless:
         offer_clipboard_copy(
             label,
             out_path,
@@ -10719,14 +10674,6 @@ def run_script(
         target_sdir = base_dir / sess_name
         if target_sdir.is_dir():
             render_end_session_card(target_sdir, headless=headless)
-    valid_start_dirs = [
-        base_dir / str(card.get("session") or "")
-        for card in start_session_cards
-        if str(card.get("session") or "") and (base_dir / str(card.get("session") or "")).is_dir()
-    ]
-    for idx, target_sdir in enumerate(valid_start_dirs):
-        is_last = idx == len(valid_start_dirs) - 1
-        render_start_session_card(target_sdir, offer_copy=(is_last and not headless))
     return rc
 
 
@@ -11216,7 +11163,7 @@ def _parse_reply_cmd_tokens(arg_str: str, delim: str) -> dict[str, object] | Non
         if tok == "--fix":
             is_fix = True
             i += 1
-        elif tok in ("-y", "--yes", "--headless", "--no-sandbox"):
+        elif tok in ("-y", "--yes", "--headless"):
             i += 1
         elif tok == "--sandbox":
             if i + 1 < len(tokens) and tokens[i + 1].lower() in SANDBOX_MODE_TOKENS:
@@ -15115,9 +15062,6 @@ def cmd_start(
         if a == "--force":
             force = True
             i += 1
-        elif a == "--no-sandbox":
-            sb_arg = "off"
-            i += 1
         elif a == "--sandbox":
             if i + 1 < len(argv) and not argv[i + 1].startswith("-"):
                 sb_arg = argv[i + 1]
@@ -15156,6 +15100,10 @@ def cmd_start(
             else:
                 raise SystemExit(start_usage)
 
+    if in_run_block():
+        sys.stderr.write(f"{prog}: cannot start a new session from inside a running block\n")
+        return 2
+
     if stdin_text is None:
         stdin_text = "" if sys.stdin.isatty() else sys.stdin.read()
 
@@ -15182,12 +15130,6 @@ def cmd_start(
         bundle_plan=bundle_plan if isinstance(bundle_plan, dict) else None,
     )
     persist_session_profile(sdir, profile)
-    if in_run_block():
-        record_parent_child_session(sdir)
-        if append_deferred_card("start_session", session=session_name):
-            sys.stdout.write(f"{prog}: initialized session {session_name} ({session_name}/0)\n")
-            sys.stdout.flush()
-            return 0
     render_start_session_card(sdir)
     return 0
 
@@ -15460,8 +15402,8 @@ def _extract_prompt_args(argv: list[str]) -> tuple[list[str], list[str]]:
     return rest, prompts
 
 
-_START_FLAGS = ("--start", "--bundle", "--session", "--force")
-_START_NEUTRAL_FLAGS = ("-y", "--yes", "--headless", "--no-sandbox", "--sandbox")
+_START_FLAGS = ("--start", "--session", "--force")
+_START_NEUTRAL_FLAGS = ("-y", "--yes", "--headless", "--sandbox")
 
 
 def _extract_profile_arg(argv: list[str]) -> tuple[list[str], str | None]:
@@ -15678,7 +15620,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_plan(sys.stdin.read())
     if args and args[0] == "--bundle-plan":
         if prompt_args:
-            _reject_prompt_for("--bundle-plan", f"{prog} --bundle-plan [<session>] [--json] [--part N]")
+            _reject_prompt_for("--bundle-plan", f"{prog} --bundle-plan [<session>] [--json]")
         return cmd_bundle_plan(args[1:])
     if args and args[0] == "--clean":
         if prompt_args:
@@ -15689,7 +15631,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_clean(args[1:])
 
     has_start_opt = any(
-        x in ("--start", "--bundle", "--session", "--force") or x.startswith("--session=")
+        x in _START_FLAGS or x.startswith("--session=")
         for x in args
     )
     if args and args[0] == "--sandbox" and not has_start_opt:
@@ -15718,9 +15660,6 @@ def main(argv: list[str] | None = None) -> int:
         elif a == "--headless":
             auto_yes = True
             headless_flag = True
-            i += 1
-        elif a == "--no-sandbox":
-            sandbox_override = "off"
             i += 1
         elif a.startswith("--sandbox="):
             sandbox_override = a.split("=", 1)[1] or "strict"
@@ -15801,14 +15740,6 @@ def _dispatch_cli(
         list_session, list_query = _parse_list_args(args[1:], list_usage)
         return cmd_list(list_session, query=list_query)
 
-    if args[0] == "--info":
-        info_usage = f"{prog} --info [session]"
-        if prompt_args:
-            _reject_prompt_for("--info", info_usage)
-        if len(args) > 2 or (len(args) == 2 and args[1].startswith("-")):
-            raise SystemExit(f"{prog}: usage: {info_usage}")
-        return cmd_info(args[1] if len(args) == 2 else None)
-
     if args[0] == "--done":
         done_usage = f"{prog} --done [-y] [session] [-m NOTE]"
         if prompt_args:
@@ -15845,29 +15776,26 @@ def _dispatch_cli(
             only=only_flags[0][2:] if only_flags else None,
         )
 
-    if args[0] in ("--retry", "--rerun"):
+    if args[0] == "--retry":
         if prompt_args:
-            _reject_prompt_for(args[0], f"{prog} --retry [-y] [session[/step]]")
+            _reject_prompt_for("--retry", f"{prog} --retry [-y] [session[/step]]")
         if len(args) > 2:
             raise SystemExit(f"{prog}: usage: {prog} --retry [-y] [session[/step]]")
         return cmd_retry(
             args[1] if len(args) == 2 else None, auto_yes=auto_yes, sandbox_override=sandbox_override
         )
 
-    if args[0] == "--check-update":
+    if args[0] == "--update":
+        update_usage = f"{prog} --update [--check | --force]"
         if prompt_args:
-            _reject_prompt_for("--check-update", f"{prog} --check-update")
-        if len(args) != 1:
-            raise SystemExit(f"{prog}: usage: {prog} --check-update")
-        return cmd_check_update()
-
-    if args[0] in ("--update", "--self-update"):
-        if prompt_args:
-            _reject_prompt_for(args[0], f"{prog} --update [--force]")
+            _reject_prompt_for("--update", update_usage)
+        check_only = "--check" in args[1:]
         force = "--force" in args[1:]
-        rest = [a for a in args[1:] if a != "--force"]
-        if rest:
-            raise SystemExit(f"{prog}: usage: {prog} --update [--force]")
+        rest = [a for a in args[1:] if a not in ("--check", "--force")]
+        if rest or (check_only and force):
+            raise SystemExit(f"{prog}: usage: {update_usage}")
+        if check_only:
+            return cmd_check_update()
         return cmd_update(force=force)
 
     if args[0] == "--uninstall":
@@ -15879,7 +15807,7 @@ def _dispatch_cli(
             raise SystemExit(f"{prog}: usage: {prog} --uninstall [--purge]")
         return cmd_uninstall(purge=purge)
 
-    if args[0] in ("--start", "--bundle"):
+    if args[0] == "--start":
         return cmd_start(args[1:], sandbox_override=sandbox_override, prompt=prompt_args, profile=profile)
 
     if args[0] in ("-r", "--run", "-c", "--clipboard") or args[0].startswith("--run="):

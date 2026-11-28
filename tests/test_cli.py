@@ -73,9 +73,16 @@ class TestCli(RunBlockTestCase):
                 sections[current] = []
             elif ln and current:
                 sections[current].append(ln)
-        self.assertEqual(list(sections), ["Usage:", "Commands:", "Options:", "Environment:"])
+        expected_tabular = (
+            "Session & Execution Commands:",
+            "Inspection & History Commands:",
+            "Configuration & Maintenance Commands:",
+            "Options:",
+            "Environment:",
+        )
+        self.assertEqual(list(sections), ["Usage:", *expected_tabular])
         all_cols = set()
-        for title in ("Commands:", "Options:", "Environment:"):
+        for title in expected_tabular:
             with self.subTest(section=title):
                 cols = set()
                 for ln in sections[title]:
@@ -89,6 +96,12 @@ class TestCli(RunBlockTestCase):
                     if not re.match(r"^  \S", ln):
                         self.assertEqual(len(ln) - len(ln.lstrip(" ")), col, ln)
         self.assertEqual(len(all_cols), 1, all_cols)
+        for title in expected_tabular[:3]:
+            for ln in sections[title]:
+                if re.match(r"^  \S", ln):
+                    label = re.split(r" {2,}", ln.strip(), maxsplit=1)[0]
+                    if label not in ("run", "<command> | run"):
+                        self.assertFalse(label.startswith("run "), label)
         for dash_arg in ("-", "-c", ""):
             with self.subTest(argv0=dash_arg):
                 with unittest.mock.patch.object(self.mod.sys, "argv", [dash_arg]):
@@ -97,9 +110,34 @@ class TestCli(RunBlockTestCase):
     def test_help_lists_session_inspection_flags(self):
         r = self._run_subprocess([str(SCRIPT), "-h"])
         self._assert_ok(r)
-        for flag in ("--info", "--filter", "--script", "--out", "-r", "--run", "-c", "--clipboard", "RUN_BLOCK_PAGER=cat|inherit"):
+        for flag in (
+            "--show [session[/step]]",
+            "--filter",
+            "--script",
+            "--out",
+            "--part N",
+            "--config [KEY[=VALUE] | --edit | --path]",
+            "--update [--check | --force]",
+            "-r",
+            "--run",
+            "-c",
+            "--clipboard",
+            "RUN_BLOCK_PAGER=cat|inherit",
+        ):
             with self.subTest(flag=flag):
                 self.assertIn(flag, r.stdout)
+        for removed in (
+            "--info",
+            "--check-update",
+            "--no-sandbox",
+            "--self-update",
+            "--rerun",
+            "RUN_BLOCK_BUNDLE_MAX_TOKENS",
+            "RUN_BLOCK_FRAGMENT_MAX_TOKENS",
+            "RUN_BLOCK_PROGRESS",
+        ):
+            with self.subTest(removed=removed):
+                self.assertNotIn(removed, r.stdout)
 
     def test_run_reply_cli_routing_and_validation(self):
         self.mod.start_session("s1")
@@ -341,8 +379,9 @@ class TestCli(RunBlockTestCase):
         self.assertIn("<session>/<step>/out", step_ref_section)
         self.assertIn("similarity >= 0.85", step_ref_section)
         options_section = readme_md[opts_idx:env_idx]
-        for flag in ("-r", "--run", "-c", "--clipboard", "-y", "--yes", "--headless", "-p", "--prompt", "--sandbox", "--no-sandbox", "-V", "--version", "-h", "--help"):
+        for flag in ("-r", "--run", "-c", "--clipboard", "-y", "--yes", "--headless", "-p", "--prompt", "--sandbox", "-V", "--version", "-h", "--help"):
             self.assertIn(flag, options_section)
+        self.assertNotIn("--no-sandbox", options_section)
 
     def test_self_update_and_check_update(self):
         bin_dir = self.tmp / "up_bin"
@@ -358,9 +397,13 @@ class TestCli(RunBlockTestCase):
         url = remote_file.as_uri()
 
         env = {**os.environ, "RUN_BLOCK_UPDATE_URL": url}
-        r_chk = self._run([str(installed), "--check-update"], capture_output=True, text=True, env=env, check=False)
+        r_chk = self._run([str(installed), "--update", "--check"], capture_output=True, text=True, env=env, check=False)
         self.assertEqual(r_chk.returncode, 0)
         self.assertIn(f"{cur_v} -> 9.9.9", r_chk.stdout)
+        for bad_up in (["--check-update"], ["--self-update"], ["--update", "--check", "--force"], ["--update", "--bogus"]):
+            with self.subTest(bad_up=bad_up):
+                r_bad_up = self._run(bad_up, env=env)
+                self.assertNotEqual(r_bad_up.returncode, 0)
 
         r_up = self._run([str(installed), "--update"], capture_output=True, text=True, env=env, check=False)
         self.assertEqual(r_up.returncode, 0)
@@ -732,6 +775,28 @@ class TestCli(RunBlockTestCase):
         r_sb_mut = self._run(["--sandbox", "strict", "s1"], env=nested_env)
         self.assertEqual(r_sb_mut.returncode, 2)
         self.assertIn("cannot modify session sandbox settings from inside a running block", r_sb_mut.stderr)
+
+        # 3. Session initialization (--start and piped bundle) is rejected inside IN_RUN_BLOCK=1 with exit 2
+        for start_argv in (["--start", "--session", "s2"], [], ["-p", "nested prompt"]):
+            with self.subTest(start_argv=start_argv):
+                r_start_nested = self._run(start_argv, input="Task: F108\n\nbody\n", env=nested_env)
+                self.assertEqual(r_start_nested.returncode, 2, msg=r_start_nested.stderr)
+                self.assertIn("cannot start a new session from inside a running block", r_start_nested.stderr)
+        self.assertFalse((self.tmp / "s2").exists())
+
+        # 4. Removed aliases (--bundle, --rerun, --self-update, --no-sandbox, --info, --check-update) are rejected
+        for removed_argv in (
+            ["--bundle"],
+            ["--rerun", "s1/1"],
+            ["--self-update"],
+            ["--no-sandbox", "s1/1"],
+            ["--start", "--no-sandbox"],
+            ["--info", "s1"],
+            ["--check-update"],
+        ):
+            with self.subTest(removed_argv=removed_argv):
+                r_rem = self._run(removed_argv)
+                self.assertNotEqual(r_rem.returncode, 0)
 
     def test_state_migration_live_step_symlink_and_workdir_fallback(self):
         xdg = self.tmp / "state_mig"

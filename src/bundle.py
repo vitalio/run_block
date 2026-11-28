@@ -154,9 +154,6 @@ def cmd_start(
         if a == "--force":
             force = True
             i += 1
-        elif a == "--no-sandbox":
-            sb_arg = "off"
-            i += 1
         elif a == "--sandbox":
             if i + 1 < len(argv) and not argv[i + 1].startswith("-"):
                 sb_arg = argv[i + 1]
@@ -195,6 +192,10 @@ def cmd_start(
             else:
                 raise SystemExit(start_usage)
 
+    if in_run_block():
+        sys.stderr.write(f"{prog}: cannot start a new session from inside a running block\n")
+        return 2
+
     if stdin_text is None:
         stdin_text = "" if sys.stdin.isatty() else sys.stdin.read()
 
@@ -221,12 +222,6 @@ def cmd_start(
         bundle_plan=bundle_plan if isinstance(bundle_plan, dict) else None,
     )
     persist_session_profile(sdir, profile)
-    if in_run_block():
-        record_parent_child_session(sdir)
-        if append_deferred_card("start_session", session=session_name):
-            sys.stdout.write(f"{prog}: initialized session {session_name} ({session_name}/0)\n")
-            sys.stdout.flush()
-            return 0
     render_start_session_card(sdir)
     return 0
 

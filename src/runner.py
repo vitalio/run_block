@@ -1426,8 +1426,6 @@ def run_script(
         pass
     deferred_cards = pop_deferred_cards(step_dir)
     end_session_cards = [c for c in deferred_cards if c.get("kind") == "end_session"]
-    start_session_cards = [c for c in deferred_cards if c.get("kind") == "start_session"]
-    has_deferred_start = bool(start_session_cards)
     clip_target = resolve_clipboard_target(out_path, full_output)
     if headless:
         if stdin_diag_lines:
@@ -1437,8 +1435,7 @@ def run_script(
         sys.stdout.write(end_line)
         sys.stdout.flush()
     elif (
-        has_deferred_start
-        or in_run_block()
+        in_run_block()
         or not sys.stdout.isatty()
         or clipboard_mode() != "prompt"
         or clipboard_command(clip_target) is None
@@ -1455,7 +1452,7 @@ def run_script(
         )
         sys.stdout.write("\n" + format_info_box("END STEP", end_body) + "\n")
         sys.stdout.flush()
-    if not headless and not has_deferred_start:
+    if not headless:
         offer_clipboard_copy(
             label,
             out_path,
@@ -1471,14 +1468,6 @@ def run_script(
         target_sdir = base_dir / sess_name
         if target_sdir.is_dir():
             render_end_session_card(target_sdir, headless=headless)
-    valid_start_dirs = [
-        base_dir / str(card.get("session") or "")
-        for card in start_session_cards
-        if str(card.get("session") or "") and (base_dir / str(card.get("session") or "")).is_dir()
-    ]
-    for idx, target_sdir in enumerate(valid_start_dirs):
-        is_last = idx == len(valid_start_dirs) - 1
-        render_start_session_card(target_sdir, offer_copy=(is_last and not headless))
     return rc
 
 
@@ -1968,7 +1957,7 @@ def _parse_reply_cmd_tokens(arg_str: str, delim: str) -> dict[str, object] | Non
         if tok == "--fix":
             is_fix = True
             i += 1
-        elif tok in ("-y", "--yes", "--headless", "--no-sandbox"):
+        elif tok in ("-y", "--yes", "--headless"):
             i += 1
         elif tok == "--sandbox":
             if i + 1 < len(tokens) and tokens[i + 1].lower() in SANDBOX_MODE_TOKENS:

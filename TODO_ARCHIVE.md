@@ -1,3 +1,15 @@
+# ✅ [DONE] F108: Simplify CLI flags, remove in-step child-session handoff, and group run -h commands into thematic sections — *2026-11-28, Simplified CLI flags, removed in-step child-session handoff, and grouped run -h into thematic command sections (v0.42.0).*
+
+- Depends on: D11
+- Bump: `MINOR`
+- Clean up redundant CLI commands, hidden flag aliases, and in-step child-session handoff in `src/cli.py`, `src/header.py`, `src/config.py`, `src/bundle.py`, `src/bundle_view.py`, and `src/runner.py` per `D11`:
+  - Remove hidden undocumented aliases `--bundle` (keep `--start`), `--rerun` (keep `--retry`), `--self-update` (keep `--update`), and `--no-sandbox` (keep `--sandbox off`).
+  - Consolidate `--info [session]` into `run --show [session[/step]] [--part N | --script | --out]` (removing the top-level `--info` flag) and remove `--part N` from `run --bundle-plan [session] [--json]` so part text extraction lives exclusively under `run --show [session] --part N`.
+  - Fold `--check-update` into `run --update [--check | --force]`, consolidate the two `--config` rows in `HELP_COMMANDS` into `--config [KEY[=VALUE] | --edit | --path]`, and trim low-frequency threshold variables (`RUN_BLOCK_BUNDLE_MAX_TOKENS`, `RUN_BLOCK_FRAGMENT_MAX_TOKENS`, `RUN_BLOCK_PROGRESS`) from `HELP_ENV` (keeping them inspectable via `run --config`).
+  - Remove in-step child-session handoff: reject `--start` / piped session initialization when `IN_RUN_BLOCK=1` with exit status `2` (`cannot start a new session from inside a running block`), and remove `start_session` deferred cards, `record_parent_child_session()`, and `"parent_session"` / `"parent_step"` / `"spawned_sessions"` from `_SESSION_STATE_KEYS` while keeping `end_session` deferred cards for `run --done`.
+  - Group `run -h` commands into thematic command sections (`Session & Execution Commands:`, `Inspection & History Commands:`, `Configuration & Maintenance Commands:`) and omit the repeated `{prog} ` prefix on flag/subcommand rows (keeping `{prog}` in `Usage:` templates and pipeline `<command> | {prog}` rows) with a shared description column within `<= 100` display columns.
+- Update `README.md`, `tests/test_cli.py`, `tests/test_bundle.py`, and `tests/test_runner.py`, rebuild `./run` via `python3 build.py`, and verify the test suite passes.
+
 # ✅ [DONE] F102: Add Bundle-Protocol v1 cache-prefix splitter, stdlib HTTP/SSE clients, and chat.json transcript — *2026-11-28, Added src/agent.py, agents/run-api.md (EMBEDDED_RULE_API), Bundle-Protocol v1 cache-prefix splitter, stdlib Anthropic/OpenAI SSE clients, chat.json transcript/compaction, and tests/test_agent.py.*
 
 - Depends on: F101, L3

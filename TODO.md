@@ -8,18 +8,6 @@
   - **Cloud & enterprise AI gateway compatibility (`resolve_provider_endpoint`, profile `headers` / `auth_header`):** Recognize `/openapi` (e.g. GCP Vertex AI `.../endpoints/openapi`) alongside `/v1` and `/openai` in `resolve_provider_endpoint()` so it appends `/chat/completions` rather than `/v1/chat/completions`, and support optional profile `headers` (dict of custom HTTP headers) and `auth_header` (`"bearer"` or `"x-api-key"`) so Anthropic/OpenAI enterprise gateways (such as `claude-appgw`, LiteLLM, Cloudflare, Portkey, or Vertex proxies) can authenticate with either `x-api-key` or `Authorization: Bearer`.
 - Add unit tests in `tests/test_agent.py` verifying incremental `on_text` emission before stream completion, OpenAI vs Anthropic compaction threshold token accounting, `/endpoints/openapi` URL resolution, and custom gateway headers.
 
-# 🎯 [NEXT] F108: Simplify CLI flags, remove in-step child-session handoff, and group run -h commands into thematic sections
-
-- Depends on: D11
-- Bump: `MINOR`
-- Clean up redundant CLI commands, hidden flag aliases, and in-step child-session handoff in `src/cli.py`, `src/header.py`, `src/config.py`, `src/bundle.py`, `src/bundle_view.py`, and `src/runner.py` per `D11`:
-  - Remove hidden undocumented aliases `--bundle` (keep `--start`), `--rerun` (keep `--retry`), `--self-update` (keep `--update`), and `--no-sandbox` (keep `--sandbox off`).
-  - Consolidate `--info [session]` into `run --show [session[/step]] [--part N | --script | --out]` (removing the top-level `--info` flag) and remove `--part N` from `run --bundle-plan [session] [--json]` so part text extraction lives exclusively under `run --show [session] --part N`.
-  - Fold `--check-update` into `run --update [--check | --force]`, consolidate the two `--config` rows in `HELP_COMMANDS` into `--config [KEY[=VALUE] | --edit | --path]`, and trim low-frequency threshold variables (`RUN_BLOCK_BUNDLE_MAX_TOKENS`, `RUN_BLOCK_FRAGMENT_MAX_TOKENS`, `RUN_BLOCK_PROGRESS`) from `HELP_ENV` (keeping them inspectable via `run --config`).
-  - Remove in-step child-session handoff: reject `--start` / piped session initialization when `IN_RUN_BLOCK=1` with exit status `2` (`cannot start a new session from inside a running block`), and remove `start_session` deferred cards, `record_parent_child_session()`, and `"parent_session"` / `"parent_step"` / `"spawned_sessions"` from `_SESSION_STATE_KEYS` while keeping `end_session` deferred cards for `run --done`.
-  - Group `run -h` commands into thematic command sections (`Session & Execution Commands:`, `Inspection & History Commands:`, `Configuration & Maintenance Commands:`) and omit the repeated `{prog} ` prefix on flag/subcommand rows (keeping `{prog}` in `Usage:` templates and pipeline `<command> | {prog}` rows) with a shared description column within `<= 100` display columns.
-- Update `README.md`, `tests/test_cli.py`, `tests/test_bundle.py`, and `tests/test_runner.py`, rebuild `./run` via `python3 build.py`, and verify the test suite passes.
-
 # 🎯 [NEXT] F110: Remove legacy run_block, .agents_bundle, and models.json migration shims
 
 - Depends on: F108
@@ -36,6 +24,16 @@
 - Depends on: F101, D11, F108
 - Extract session and step state/metadata persistence helpers (`_step_dir`, `_iter_session_steps`, `_iter_session_scripts`, `get_session_state()`, `<session>/meta.json` and `<session>/<step>/meta.json` read/write/stats helpers, `parse_stdin_preamble()`, `parse_bundle_header_items()`, `get_work_dir()`, `get_sandbox_mode()`, and `IN_RUN_BLOCK=1` `end_session` deferred card helpers) out of `src/config.py` into `src/session_meta.py` (~500 lines), keeping `src/config.py` (~600 lines) focused on `_SETTING_SPECS`, `get_setting()`, `config.json` / `.run-block.json` loading, model/role profile and API key resolution, and `usage_text()`.
 - Register `src/session_meta.py` in `build.py` `MODULE_ORDER`, update `AGENTS.md` if needed, rebuild `./run` via `python3 build.py`, and verify all unit tests pass.
+
+# 🎯 [NEXT] F106: Add model-order (system/user) view mode and interactive toggle to --bundle-plan and START SESSION info
+
+- Depends on: F102, F108
+- Bump: `MINOR`
+- Add an explicit model-delivery order view mode alongside the existing source-chain tree in `src/bundle_view.py`, `src/ui_info.py`, `src/header.py`, and `README.md`:
+  - Support `--order` (and `--tree`, default `--tree`) on `run --bundle-plan [<session>] [--order | --tree] [--json]`.
+  - In `order` mode, render bundle parts strictly in their stitched prompt delivery order grouped under the two API message containers defined in `docs/adr/0001-built-in-api-agent-mode.md`: `[system]` (all `kind == "rule"` parts in exact `===== Rules =====` order plus root `AGENTS.md` `kind == "file"`) and `[user]` (`kind == "header"` session preamble followed by `cmd`, remaining `file`, and `prompt` parts in exact `line_start..line_end` order), displaying each part's canonical part index.
+  - In the interactive `START SESSION` `i(nfo)` fullscreen viewer (`src/ui_info.py`), bind hotkey `o` (`o(rder): model/tree` in the footer bar) to toggle live between the source-chain tree and the model-delivery order table while keeping `Tab: parts` and `Enter: open part` navigation working seamlessly in both modes.
+- Add unit tests in `tests/test_bundle.py` and `tests/test_ui.py` covering `--bundle-plan --order`, `[system]`/`[user]` grouping metrics, and interactive `o` mode toggling in `START SESSION` info.
 
 # 🎯 [NEXT] F93: Split src/runner.py into src/reply.py, src/fix.py, src/inspect_cmd.py, and src/runner.py
 
@@ -111,16 +109,6 @@
   - Add `run --step <target_session> --propose | --approve [--propose] | --reject "<reason>" [--propose] | --reply "<message>" [--propose] | --autopilot` (and `--profile <name>` / `-P`, `--autopilot` CLI flags) allowing a supervisor session (`IN_RUN_BLOCK=1`, when `<target_session>` is a distinct worker session initialized outside `IN_RUN_BLOCK=1`) or external orchestrator to inspect, approve, reject, reply to, or autopilot a worker session (surfacing `awaiting_reply` distinctly from `completed`).
   - Implement safe autopilot pausing automatically whenever `src/safety.py` reports risk findings, `RUN_BLOCK_APPROVE_CMD` prompts/rejects, the model enters `awaiting_reply`, or `max_steps` / consecutive failure limits are reached.
   - Add unit tests in `tests/test_agent.py` and `tests/test_runner.py` covering `proposed` and `awaiting_reply` lifecycle, 1:1 `chat.json` step materialization, `--continue`, supervisor `--step` commands, active-session guards, and safe autopilot pause triggers.
-
-# 🎯 [NEXT] F106: Add model-order (system/user) view mode and interactive toggle to --bundle-plan and START SESSION info
-
-- Depends on: F102, F108
-- Bump: `MINOR`
-- Add an explicit model-delivery order view mode alongside the existing source-chain tree in `src/bundle_view.py`, `src/ui_info.py`, `src/header.py`, and `README.md`:
-  - Support `--order` (and `--tree`, default `--tree`) on `run --bundle-plan [<session>] [--order | --tree] [--json]`.
-  - In `order` mode, render bundle parts strictly in their stitched prompt delivery order grouped under the two API message containers defined in `docs/adr/0001-built-in-api-agent-mode.md`: `[system]` (all `kind == "rule"` parts in exact `===== Rules =====` order plus root `AGENTS.md` `kind == "file"`) and `[user]` (`kind == "header"` session preamble followed by `cmd`, remaining `file`, and `prompt` parts in exact `line_start..line_end` order), displaying each part's canonical part index.
-  - In the interactive `START SESSION` `i(nfo)` fullscreen viewer (`src/ui_info.py`), bind hotkey `o` (`o(rder): model/tree` in the footer bar) to toggle live between the source-chain tree and the model-delivery order table while keeping `Tab: parts` and `Enter: open part` navigation working seamlessly in both modes.
-- Add unit tests in `tests/test_bundle.py` and `tests/test_ui.py` covering `--bundle-plan --order`, `[system]`/`[user]` grouping metrics, and interactive `o` mode toggling in `START SESSION` info.
 
 # 🎯 [NEXT] F88: Integrate interactive TUI agent loop, model reply prompts, and provider cache stats in cards
 

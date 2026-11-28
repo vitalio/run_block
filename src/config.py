@@ -624,7 +624,7 @@ def _help_section(title: str, rows: tuple, fmt: dict, col: int) -> list[str]:
 def usage_text() -> str:
     prog = prog_name()
     fmt = {"prog": prog, "base_dir": default_base_dir(prog, migrate=False)}
-    sections = (("Commands:", HELP_COMMANDS), ("Options:", HELP_OPTIONS), ("Environment:", HELP_ENV))
+    sections = (*HELP_COMMAND_SECTIONS, ("Options:", HELP_OPTIONS), ("Environment:", HELP_ENV))
     all_labels = [label.format(**fmt) for _, rows in sections for label, _ in rows]
     col = min(max(display_width(x) for x in all_labels) + 4, HELP_MAX_LABEL_COL)
     out = ["Usage:"] + ["  " + s.format(**fmt) for s in HELP_USAGE]
@@ -795,9 +795,6 @@ _SESSION_STATE_KEYS = (
     "completed_note",
     "stats",
     "usage",
-    "parent_session",
-    "parent_step",
-    "spawned_sessions",
     "profile",
 )
 _STAT_COUNTERS = ("steps", "ok", "failed", "fix", "renumbered", "duration_ms")
@@ -1184,28 +1181,3 @@ def pop_deferred_cards(step_dir: Path | None) -> list[dict[str, object]]:
     deferred_file.unlink(missing_ok=True)
     return cards
 
-
-def record_parent_child_session(child_sdir: Path) -> tuple[str, str] | None:
-    ref = parent_run_block_ref()
-    if ref is None:
-        return None
-    parent_sess, parent_step = ref
-    base = child_sdir.parent
-    parent_sdir = base / parent_sess
-    update_session_meta(
-        child_sdir,
-        parent_session=parent_sess,
-        parent_step=parent_step,
-    )
-    if parent_sdir.is_dir():
-        p_meta = read_session_meta(parent_sdir)
-        raw_spawned = p_meta.get("spawned_sessions")
-        spawned: list[str] = (
-            [str(x) for x in raw_spawned if isinstance(x, str)]
-            if isinstance(raw_spawned, list)
-            else []
-        )
-        if child_sdir.name not in spawned:
-            spawned.append(child_sdir.name)
-        update_session_meta(parent_sdir, spawned_sessions=spawned)
-    return parent_sess, parent_step

@@ -437,8 +437,7 @@ def format_bundle_plan_text(plan: dict[str, object], *, session: str | None = No
 
 def cmd_bundle_plan(argv: list[str], stdin_text: str | None = None) -> int:
     prog = prog_name()
-    usage = f"{prog} --bundle-plan [<session>] [--json] [--part N]"
-    argv, part_no = parse_part_option(argv, usage)
+    usage = f"{prog} --bundle-plan [<session>] [--json]"
     as_json = False
     session_arg: str | None = None
     for a in argv:
@@ -450,11 +449,8 @@ def cmd_bundle_plan(argv: list[str], stdin_text: str | None = None) -> int:
             session_arg = a
         else:
             raise SystemExit(f"{prog}: usage: {usage}")
-    if part_no is not None and as_json:
-        raise SystemExit(f"{prog}: --part cannot be combined with --json")
 
     plan: dict[str, object] | None = None
-    plan_text: str | None = None
     if session_arg is not None:
         sess = session_arg.split("/", 1)[0] if session_arg.endswith("/0") else session_arg
         if not re.fullmatch(r"[A-Za-z0-9._-]+", sess):
@@ -467,9 +463,6 @@ def cmd_bundle_plan(argv: list[str], stdin_text: str | None = None) -> int:
         if plan is None:
             raise SystemExit(f"{prog}: no bundle data found for session {sess!r}")
         session_arg = sess
-        bundle_file = sdir / "0"
-        if bundle_file.is_file():
-            plan_text = bundle_file.read_text(encoding="utf-8", errors="replace")
     else:
         if stdin_text is None:
             if sys.stdin.isatty():
@@ -481,20 +474,7 @@ def cmd_bundle_plan(argv: list[str], stdin_text: str | None = None) -> int:
             stdin_text = sys.stdin.read()
         stdin_headers, raw_body = parse_stdin_preamble(stdin_text)
         boundary = get_bundle_boundary(stdin_headers)
-        plan_text, plan = parse_bundle_fragments(raw_body, boundary=boundary)
-
-    if part_no is not None:
-        target = f"{session_arg}/0" if session_arg is not None else "stdin"
-        if plan_text is None:
-            raise SystemExit(f"{prog}: bundle text for {target} not found")
-        try:
-            entry, chunk = extract_bundle_part(plan, plan_text, part_no)
-        except ValueError as exc:
-            raise SystemExit(f"{prog}: {target}: {exc}")
-        sys.stderr.write(format_part_header(target, entry, int(plan.get("part_count") or 0)))
-        sys.stdout.write(chunk)
-        sys.stdout.flush()
-        return 0
+        _, plan = parse_bundle_fragments(raw_body, boundary=boundary)
 
     if as_json:
         payload = dict(plan)

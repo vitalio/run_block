@@ -203,8 +203,8 @@ def _extract_prompt_args(argv: list[str]) -> tuple[list[str], list[str]]:
     return rest, prompts
 
 
-_START_FLAGS = ("--start", "--bundle", "--session", "--force")
-_START_NEUTRAL_FLAGS = ("-y", "--yes", "--headless", "--no-sandbox", "--sandbox")
+_START_FLAGS = ("--start", "--session", "--force")
+_START_NEUTRAL_FLAGS = ("-y", "--yes", "--headless", "--sandbox")
 
 
 def _extract_profile_arg(argv: list[str]) -> tuple[list[str], str | None]:
@@ -421,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_plan(sys.stdin.read())
     if args and args[0] == "--bundle-plan":
         if prompt_args:
-            _reject_prompt_for("--bundle-plan", f"{prog} --bundle-plan [<session>] [--json] [--part N]")
+            _reject_prompt_for("--bundle-plan", f"{prog} --bundle-plan [<session>] [--json]")
         return cmd_bundle_plan(args[1:])
     if args and args[0] == "--clean":
         if prompt_args:
@@ -432,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_clean(args[1:])
 
     has_start_opt = any(
-        x in ("--start", "--bundle", "--session", "--force") or x.startswith("--session=")
+        x in _START_FLAGS or x.startswith("--session=")
         for x in args
     )
     if args and args[0] == "--sandbox" and not has_start_opt:
@@ -461,9 +461,6 @@ def main(argv: list[str] | None = None) -> int:
         elif a == "--headless":
             auto_yes = True
             headless_flag = True
-            i += 1
-        elif a == "--no-sandbox":
-            sandbox_override = "off"
             i += 1
         elif a.startswith("--sandbox="):
             sandbox_override = a.split("=", 1)[1] or "strict"
@@ -544,14 +541,6 @@ def _dispatch_cli(
         list_session, list_query = _parse_list_args(args[1:], list_usage)
         return cmd_list(list_session, query=list_query)
 
-    if args[0] == "--info":
-        info_usage = f"{prog} --info [session]"
-        if prompt_args:
-            _reject_prompt_for("--info", info_usage)
-        if len(args) > 2 or (len(args) == 2 and args[1].startswith("-")):
-            raise SystemExit(f"{prog}: usage: {info_usage}")
-        return cmd_info(args[1] if len(args) == 2 else None)
-
     if args[0] == "--done":
         done_usage = f"{prog} --done [-y] [session] [-m NOTE]"
         if prompt_args:
@@ -588,29 +577,26 @@ def _dispatch_cli(
             only=only_flags[0][2:] if only_flags else None,
         )
 
-    if args[0] in ("--retry", "--rerun"):
+    if args[0] == "--retry":
         if prompt_args:
-            _reject_prompt_for(args[0], f"{prog} --retry [-y] [session[/step]]")
+            _reject_prompt_for("--retry", f"{prog} --retry [-y] [session[/step]]")
         if len(args) > 2:
             raise SystemExit(f"{prog}: usage: {prog} --retry [-y] [session[/step]]")
         return cmd_retry(
             args[1] if len(args) == 2 else None, auto_yes=auto_yes, sandbox_override=sandbox_override
         )
 
-    if args[0] == "--check-update":
+    if args[0] == "--update":
+        update_usage = f"{prog} --update [--check | --force]"
         if prompt_args:
-            _reject_prompt_for("--check-update", f"{prog} --check-update")
-        if len(args) != 1:
-            raise SystemExit(f"{prog}: usage: {prog} --check-update")
-        return cmd_check_update()
-
-    if args[0] in ("--update", "--self-update"):
-        if prompt_args:
-            _reject_prompt_for(args[0], f"{prog} --update [--force]")
+            _reject_prompt_for("--update", update_usage)
+        check_only = "--check" in args[1:]
         force = "--force" in args[1:]
-        rest = [a for a in args[1:] if a != "--force"]
-        if rest:
-            raise SystemExit(f"{prog}: usage: {prog} --update [--force]")
+        rest = [a for a in args[1:] if a not in ("--check", "--force")]
+        if rest or (check_only and force):
+            raise SystemExit(f"{prog}: usage: {update_usage}")
+        if check_only:
+            return cmd_check_update()
         return cmd_update(force=force)
 
     if args[0] == "--uninstall":
@@ -622,7 +608,7 @@ def _dispatch_cli(
             raise SystemExit(f"{prog}: usage: {prog} --uninstall [--purge]")
         return cmd_uninstall(purge=purge)
 
-    if args[0] in ("--start", "--bundle"):
+    if args[0] == "--start":
         return cmd_start(args[1:], sandbox_override=sandbox_override, prompt=prompt_args, profile=profile)
 
     if args[0] in ("-r", "--run", "-c", "--clipboard") or args[0].startswith("--run="):
