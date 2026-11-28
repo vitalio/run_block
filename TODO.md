@@ -10,13 +10,13 @@
 
 # 🎯 [NEXT] F110: Remove legacy run_block, .agents_bundle, and models.json migration shims
 
-- Depends on: F108
+- Depends on: F108, F93
 - Bump: `PATCH`
 - Remove post-ADR-0004 legacy migration shims and fallbacks across `src/`, `install.sh`, `README.md`, and `tests/` (retaining canonical `RUN_BLOCK_*` / `IN_RUN_BLOCK` environment variables and `in_run_block()` / `parent_run_block_ref()` helpers):
   - `src/header.py`, `src/cli.py`, & `install.sh`: remove `LEGACY_REPO_MARKER = "run_block-repo: vitalio/run_block"`, `REPO_MARKERS`, `_cleanup_legacy_binary_and_state()`, `dest.name == "run_block"` redirection in `cmd_update()`, and `run_block` binary / state directory cleanup in `cmd_uninstall()` and `install.sh` (change conflict fallback `ALT_NAME="run_block"` to `ALT_NAME="run_cli"` in `install.sh`).
   - `src/config.py`: remove `_migrate_state_dir()` (`~/.local/state/run_block` -> `~/.local/state/run-block` rename/symlink migration), remove `LEGACY_CONFIG_FILE_NAME = "models.json"` fallback in `config_file_path()` (and `HELP_ENV`), and drop `".agents_bundle"` from `PROJECT_ROOT_MARKERS = (".context.bundle", "AGENTS.md")`.
-  - `src/bundle_parse.py`, `src/agent.py`, & `src/runner.py`: drop `.replace("{cmd:run_block}", prog)` in `src/bundle_parse.py` and `src/agent.py` (`get_embedded_api_rule()`), drop `".agents_bundle"` from `_ROOT_AGENTS_MD_CHAINS` in `src/agent.py`, and drop `blocks/bash` from `EMBEDDED_RULE_ID_RE` in `src/bundle_parse.py`; drop `(?:_block)?` from `SPLIT_HEADER_RE`, `REPLY_CMD_HEADER_RE`, and `PROSE_BULLET_HDR_RE` in `src/runner.py` (or `src/reply.py` if after `F93`) so block fences match canonical `run`.
-  - `README.md` & `tests/`: remove references to `.agents_bundle`, `models.json`, `run_block` binary, and `~/.local/state/run_block` migration from `README.md`; remove legacy migration tests in `tests/test_cli.py` and update legacy `agents_bundle`, `todo_md`, `vitalio/run_block:blocks/bash`, and `run_block s1/1` test fixtures across `tests/test_*.py`.
+  - `src/bundle_parse.py`, `src/agent.py`, & `src/reply.py`: drop `.replace("{cmd:run_block}", prog)` in `src/bundle_parse.py` and `src/agent.py` (`get_embedded_api_rule()`), drop `".agents_bundle"` from `_ROOT_AGENTS_MD_CHAINS` in `src/agent.py`, and drop `blocks/bash` from `EMBEDDED_RULE_ID_RE` in `src/bundle_parse.py`; drop `(?:_block)?` from `SPLIT_HEADER_RE`, `REPLY_CMD_HEADER_RE`, and `PROSE_BULLET_HDR_RE` in `src/reply.py` so block fences match canonical `run`.
+  - `README.md` & `tests/`: remove references to `.agents_bundle`, `models.json`, `run_block` binary, and `~/.local/state/run_block` migration from `README.md`; remove legacy migration tests in `tests/test_cli.py`, extract `TestConfigSettings` from `tests/test_runner.py` into a dedicated `tests/test_config.py` (dropping the obsolete `models.json` fallback assertion from `test_config_path_override`), and update legacy `agents_bundle`, `todo_md`, `vitalio/run_block:blocks/bash`, and `run_block s1/1` test fixtures across `tests/test_*.py`.
 - Rebuild `./run` via `python3 build.py` and verify the full test suite passes.
 
 # 🎯 [NEXT] F106: Add model-order (system/user) view mode and interactive toggle to --bundle-plan and START SESSION info
@@ -100,11 +100,6 @@
   - Stream model reasoning and tool-call progress cleanly in the terminal, transition into `START STEP` (showing `Stats:`, `Reasoning (<stats>):`, single-line `Script (<stats>):`, and safety warnings), and when the model replies with prose only (`outcome: "awaiting_reply"`), present `[r(eply)/d(one)/q(uit)/i(nfo)]` so the user can answer (`r`), manually confirm completion (`d`, promoting the model's summary to `completed_note`), or exit to shell (`q`/`n`).
   - Display provider token usage, cache hit percentage, and remaining Anthropic cache TTL in `Stats:` across `END STEP` and `END SESSION` while keeping fast offline `count_tokens()` estimation for pre-flight cards.
   - Document `--profile` / `-P`, `--continue`, `--autopilot`, `--step`, `config.json` / `models.json`, and `RUN_BLOCK_MODEL*` / `RUN_BLOCK_CACHE` in `src/header.py` (`--help`), `agents/run.md`, and `README.md`, and add unit tests in `tests/test_ui.py` and `tests/test_cli.py`.
-
-# ⚪ [NEW] F111: Move TestConfigSettings from tests/test_runner.py into tests/test_config.py
-
-Problem: `TestConfigSettings` (settings precedence, profiles, API key scrubbing, `_clean_out_text`) lives in `tests/test_runner.py` although it exercises `src/config.py` and `src/safety.py`.
-Impact: breaks the mirrored test layout; config regressions surface under the runner suite.
 
 # ⏸️ [HOLD] D9: Design machine-readable runner contract (--json step output and plan/execute handshake) — *Defer external machine-readable runner contract until an external client is needed; built-in API agent mode (D10) runs in-process*
 

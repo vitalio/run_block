@@ -1,3 +1,8 @@
+# ❌ [CANCELED] F111: Move TestConfigSettings from tests/test_runner.py into tests/test_config.py — *2026-11-28, Consolidated into F110*
+
+Problem: `TestConfigSettings` (settings precedence, profiles, API key scrubbing, `_clean_out_text`) lives in `tests/test_runner.py` although it exercises `src/config.py` and `src/safety.py`.
+Impact: breaks the mirrored test layout; config regressions surface under the runner suite.
+
 # ✅ [DONE] F107: Extract session and step metadata persistence from src/config.py into src/session_meta.py — *2026-11-28, Extracted session and step metadata persistence from src/config.py into src/session_meta.py.*
 
 - Depends on: F101, D11, F108
