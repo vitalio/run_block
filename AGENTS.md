@@ -8,7 +8,7 @@ rules are loaded via `.context.bundle`.
 - `src/header.py` — `--help` row tables (`HELP_*`), standard library imports,
   version constants, and the embedded rule placeholders
   (`EMBEDDED_RULE_BASH`, `EMBEDDED_RULE_API`) populated by `build.py`.
-- `src/config.py` (and `src/session_meta.py` split in `F107`) — settings
+- `src/config.py` — settings
   resolution (`_SETTING_SPECS`, `get_setting()` returning `(value, source)`
   with precedence env, project `.run-block.json`, user `config.json`, default),
   config file loading and `0600` writes (`config_file_path()`,
@@ -19,7 +19,7 @@ rules are loaded via `.context.bundle`.
   controlled by `RUN_BLOCK_PAGER`, default `cat`), and `usage_text()`, which
   renders `--help` from the `HELP_*` tables (thematic command sections, unified
   description column across all sections, lines <= 100 display columns).
-  `src/session_meta.py` owns session/step metadata persistence
+- `src/session_meta.py` — session/step metadata persistence
   (`<session>/meta.json`, `<session>/<step>/meta.json`), session lifecycle
   state (`get_session_state()`), bundle header parsing, `Workdir`/`Sandbox`
   resolution, and `IN_RUN_BLOCK=1` deferred `end_session` card state.
@@ -137,7 +137,7 @@ rules are loaded via `.context.bundle`.
   session, warn and prompt for confirmation (`SESSION COMPLETED`, default
   `No`), clearing the completed flag only when confirmed (or when `-y`/`--yes`
   is explicitly passed).
-- Session lifecycle states and step outcome labels (`src/config.py`,
+- Session lifecycle states and step outcome labels (`src/session_meta.py`,
   `src/runner.py`):
   - Session lifecycle state (`get_session_state(sdir)`): `done` when
     `<session>/meta.json` has `"completed": true`; `active` when not completed

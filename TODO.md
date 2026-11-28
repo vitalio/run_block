@@ -19,12 +19,6 @@
   - `README.md` & `tests/`: remove references to `.agents_bundle`, `models.json`, `run_block` binary, and `~/.local/state/run_block` migration from `README.md`; remove legacy migration tests in `tests/test_cli.py` and update legacy `agents_bundle`, `todo_md`, `vitalio/run_block:blocks/bash`, and `run_block s1/1` test fixtures across `tests/test_*.py`.
 - Rebuild `./run` via `python3 build.py` and verify the full test suite passes.
 
-# 🎯 [NEXT] F107: Extract session and step metadata persistence from src/config.py into src/session_meta.py
-
-- Depends on: F101, D11, F108
-- Extract session and step state/metadata persistence helpers (`_step_dir`, `_iter_session_steps`, `_iter_session_scripts`, `get_session_state()`, `<session>/meta.json` and `<session>/<step>/meta.json` read/write/stats helpers, `parse_stdin_preamble()`, `parse_bundle_header_items()`, `get_work_dir()`, `get_sandbox_mode()`, and `IN_RUN_BLOCK=1` `end_session` deferred card helpers) out of `src/config.py` into `src/session_meta.py` (~500 lines), keeping `src/config.py` (~600 lines) focused on `_SETTING_SPECS`, `get_setting()`, `config.json` / `.run-block.json` loading, model/role profile and API key resolution, and `usage_text()`.
-- Register `src/session_meta.py` in `build.py` `MODULE_ORDER`, update `AGENTS.md` if needed, rebuild `./run` via `python3 build.py`, and verify all unit tests pass.
-
 # 🎯 [NEXT] F106: Add model-order (system/user) view mode and interactive toggle to --bundle-plan and START SESSION info
 
 - Depends on: F102, F108

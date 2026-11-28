@@ -20,6 +20,7 @@ OUT_FILE = ROOT / "run"
 MODULE_ORDER = [
     "header.py",
     "config.py",
+    "session_meta.py",
     "safety.py",
     "ui.py",
     "ui_info.py",

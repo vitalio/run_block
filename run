@@ -36,7 +36,7 @@ except ImportError:
     tty = None  # type: ignore[assignment]
     HAS_PTY = False
 
-VERSION = "0.42.0"
+VERSION = "0.42.1"
 REPO_MARKER = "run-block-repo: vitalio/run-block"
 LEGACY_REPO_MARKER = "run_block-repo: vitalio/run_block"
 REPO_MARKERS = (REPO_MARKER, LEGACY_REPO_MARKER)
@@ -647,64 +647,6 @@ def set_config_value(key: str, raw_value: str) -> Path:
     return write_user_config(data)
 
 
-def _script_ext() -> str:
-    return ".sh"
-
-
-def _step_dir(sdir: Path, step: str) -> Path:
-    return sdir / step
-
-
-def _find_step_script(sdir: Path, step: str) -> Path:
-    return _step_dir(sdir, step) / "block.sh"
-
-
-def _orig_backup_path(script_path: Path) -> Path:
-    ext = script_path.suffix or ".sh"
-    return script_path.with_name(f"block.orig{ext}")
-
-
-def _orig_file_backup_path(target_path: Path) -> Path:
-    return target_path.with_name(f"{target_path.name}.orig")
-
-
-_STEP_DIR_RE = re.compile(r"\d+(?:_\d+)?")
-_STEP_ARTIFACTS = ("block.sh", "fix.py", "out", "error", "aborted", "meta.json")
-STEP_OUTCOMES = ("ok", "failed", "syntax-error", "not-run", "aborted", "saved")
-
-
-def _iter_session_steps(sdir: Path) -> list[Path]:
-    if not sdir.is_dir():
-        return []
-    steps = [
-        d
-        for d in sdir.iterdir()
-        if d.is_dir()
-        and _STEP_DIR_RE.fullmatch(d.name)
-        and any((d / name).exists() for name in _STEP_ARTIFACTS)
-    ]
-    return sorted(steps, key=lambda d: _step_sort_key(d.name))
-
-
-def _iter_session_scripts(sdir: Path) -> list[Path]:
-    scripts: list[Path] = []
-    for d in _iter_session_steps(sdir):
-        p = d / "block.sh"
-        if p.is_file():
-            scripts.append(p)
-    return scripts
-
-
-def get_session_state(sdir: Path) -> str:
-    if is_session_completed(sdir):
-        return "done"
-    if _iter_session_steps(sdir):
-        return "active"
-    if (sdir / "0").is_file():
-        return "bundle-only"
-    return "empty"
-
-
 def default_base_dir(prog: str | None = None, *, migrate: bool = True) -> Path:
     val, _ = get_setting("base_dir", prog=prog, migrate=migrate)
     return Path(val)
@@ -780,6 +722,77 @@ def _git_toplevel_or_cwd() -> Path:
                 cur = cur.parent
         return top
     return cwd
+
+
+def clipboard_mode() -> str:
+    val, _ = get_setting("clipboard")
+    if val in ("never", "off", "0", "false", "no"):
+        return "never"
+    if val in ("auto", "always"):
+        return "auto"
+    return "prompt"
+
+
+def no_clipboard() -> bool:
+    return clipboard_mode() == "never"
+
+
+def _script_ext() -> str:
+    return ".sh"
+
+
+def _step_dir(sdir: Path, step: str) -> Path:
+    return sdir / step
+
+
+def _find_step_script(sdir: Path, step: str) -> Path:
+    return _step_dir(sdir, step) / "block.sh"
+
+
+def _orig_backup_path(script_path: Path) -> Path:
+    ext = script_path.suffix or ".sh"
+    return script_path.with_name(f"block.orig{ext}")
+
+
+def _orig_file_backup_path(target_path: Path) -> Path:
+    return target_path.with_name(f"{target_path.name}.orig")
+
+
+_STEP_DIR_RE = re.compile(r"\d+(?:_\d+)?")
+_STEP_ARTIFACTS = ("block.sh", "fix.py", "out", "error", "aborted", "meta.json")
+STEP_OUTCOMES = ("ok", "failed", "syntax-error", "not-run", "aborted", "saved")
+
+
+def _iter_session_steps(sdir: Path) -> list[Path]:
+    if not sdir.is_dir():
+        return []
+    steps = [
+        d
+        for d in sdir.iterdir()
+        if d.is_dir()
+        and _STEP_DIR_RE.fullmatch(d.name)
+        and any((d / name).exists() for name in _STEP_ARTIFACTS)
+    ]
+    return sorted(steps, key=lambda d: _step_sort_key(d.name))
+
+
+def _iter_session_scripts(sdir: Path) -> list[Path]:
+    scripts: list[Path] = []
+    for d in _iter_session_steps(sdir):
+        p = d / "block.sh"
+        if p.is_file():
+            scripts.append(p)
+    return scripts
+
+
+def get_session_state(sdir: Path) -> str:
+    if is_session_completed(sdir):
+        return "done"
+    if _iter_session_steps(sdir):
+        return "active"
+    if (sdir / "0").is_file():
+        return "bundle-only"
+    return "empty"
 
 
 BUNDLE_HEADER_RE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z0-9-]+)?):\s*(.*)$")
@@ -1210,19 +1223,6 @@ def get_sandbox_mode(session_dir: Path | None = None, override: str | None = Non
             return "off"
     val, _ = get_setting("sandbox")
     return normalize_sandbox_mode(val)
-
-
-def clipboard_mode() -> str:
-    val, _ = get_setting("clipboard")
-    if val in ("never", "off", "0", "false", "no"):
-        return "never"
-    if val in ("auto", "always"):
-        return "auto"
-    return "prompt"
-
-
-def no_clipboard() -> bool:
-    return clipboard_mode() == "never"
 
 
 def in_run_block() -> bool:

@@ -1,3 +1,9 @@
+# ✅ [DONE] F107: Extract session and step metadata persistence from src/config.py into src/session_meta.py — *2026-11-28, Extracted session and step metadata persistence from src/config.py into src/session_meta.py.*
+
+- Depends on: F101, D11, F108
+- Extract session and step state/metadata persistence helpers (`_step_dir`, `_iter_session_steps`, `_iter_session_scripts`, `get_session_state()`, `<session>/meta.json` and `<session>/<step>/meta.json` read/write/stats helpers, `parse_stdin_preamble()`, `parse_bundle_header_items()`, `get_work_dir()`, `get_sandbox_mode()`, and `IN_RUN_BLOCK=1` `end_session` deferred card helpers) out of `src/config.py` into `src/session_meta.py` (~500 lines), keeping `src/config.py` (~600 lines) focused on `_SETTING_SPECS`, `get_setting()`, `config.json` / `.run-block.json` loading, model/role profile and API key resolution, and `usage_text()`.
+- Register `src/session_meta.py` in `build.py` `MODULE_ORDER`, update `AGENTS.md` if needed, rebuild `./run` via `python3 build.py`, and verify all unit tests pass.
+
 # ✅ [DONE] F108: Simplify CLI flags, remove in-step child-session handoff, and group run -h commands into thematic sections — *2026-11-28, Simplified CLI flags, removed in-step child-session handoff, and grouped run -h into thematic command sections (v0.42.0).*
 
 - Depends on: D11
