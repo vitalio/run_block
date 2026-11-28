@@ -19,6 +19,8 @@
   - `README.md` & `tests/`: remove references to `.agents_bundle`, `models.json`, `run_block` binary, and `~/.local/state/run_block` migration from `README.md`; remove legacy migration tests in `tests/test_cli.py`, extract `TestConfigSettings` from `tests/test_runner.py` into a dedicated `tests/test_config.py` (dropping the obsolete `models.json` fallback assertion from `test_config_path_override`), and update legacy `agents_bundle`, `todo_md`, `vitalio/run_block:blocks/bash`, and `run_block s1/1` test fixtures across `tests/test_*.py`.
 - Rebuild `./run` via `python3 build.py` and verify the full test suite passes.
 
+- Compact `AGENTS.md` to concise 1-3 line module boundary summaries and cross-file invariants (removing private helper inventories such as `_iter_session_steps`, `_step_sort_key`, `_step_outcome`, `prompt_yes_no_box`, CLI `--help` flag duplication, and unimplemented `F109` TUI specs until `F109` lands).
+
 # 🎯 [NEXT] F106: Add model-order (system/user) view mode and interactive toggle to --bundle-plan and START SESSION info
 
 - Depends on: F102, F108
@@ -40,6 +42,8 @@
   - Structure fullscreen `i(nfo)` (using full `term_cols`) into horizontal-rule-separated sections (`Headers`, `Reasoning`, `Script`, `Output`, `Prompt`): render `Headers` as a two-column vertical split (`Session Headers │ Step Headers`), cap each section in overview mode to ~1/3 terminal height with single-line operation rows, bind `Tab` to cycle sections, and bind `Enter` or direct hotkeys (`h`, `r`, `s`, `o`, `p`) to expand a section to fullscreen (`e(dit)` opens `$EDITOR`).
   - Add in-TUI session history navigation across cards and `i(nfo)`: `b(undle)` to inspect `<session>/0`, `[`/`]` (`Left`/`Right`) to step backward/forward through `<session>/0 .. <session>/<latest>`, and `{`/`}` (`Home`/`End`) to jump to the start (`<session>/0`) or latest step of the session.
 - Add unit tests in `tests/test_ui.py` and `tests/test_runner.py` covering the 100-column card cap, symmetric `START STEP` / `END STEP` `Stats:` and section previews, inline `a(ppend)` / `o(verwrite)` conflict handling, `$EDITOR` prompt creation/re-editing, two-column `Headers` split, multi-section `i(nfo)` overview/fullscreen transitions, and `[`/`]`/`{`/`}`/`b` history navigation.
+
+- Update the `src/ui.py`, `src/ui_info.py`, and `src/ui_prompt.py` entries in `AGENTS.md` concisely (1-3 lines per module) to match the implemented TUI card, `i(nfo)`, and history navigation boundaries.
 
 # 🎯 [NEXT] D4: Design workspace state fingerprinting and drift detection across steps
 
